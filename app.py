@@ -1,6 +1,8 @@
 """
-US Market Theme & Breadth Tracker — Streamlit Web App
+US Market Theme & Breadth Tracker — Full Featured Web App
 Live data from Yahoo Finance + Finviz
+Features: Sectors, Themes, Breadth, Finviz Industries, Stage 2 Scanner,
+          Sector Rotation, 52W Heatmap, RS Rating, Watchlist, Alerts, History
 """
 
 import streamlit as st
@@ -10,16 +12,18 @@ import plotly.graph_objects as go
 import plotly.express as px
 import requests
 from bs4 import BeautifulSoup
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
 import re
+import io
+import json
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="US Market Tracker",
     page_icon="📊",
     layout="wide",
-    initial_sidebar_state="collapsed",
+    initial_sidebar_state="expanded",
 )
 
 # ── Custom CSS ────────────────────────────────────────────────────────────────
@@ -27,217 +31,185 @@ st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500;600;700&display=swap');
 
-html, body, [class*="css"] {
-    font-family: 'DM Sans', sans-serif;
-}
+html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
 .stApp { background: #0a0e1a; }
+h1,h2,h3 { font-family: 'DM Sans', sans-serif; font-weight: 700; }
 
-h1, h2, h3 { font-family: 'DM Sans', sans-serif; font-weight: 700; }
-
-/* Header */
 .main-header {
     background: linear-gradient(135deg, #0d1b2a 0%, #1a2744 50%, #0d1b2a 100%);
     border: 1px solid #1e3a5f;
     border-radius: 12px;
-    padding: 24px 32px;
-    margin-bottom: 24px;
+    padding: 20px 28px;
+    margin-bottom: 20px;
 }
-.main-title {
-    font-size: 28px;
-    font-weight: 700;
-    color: #e8f4fd;
-    margin: 0;
-    letter-spacing: -0.5px;
-}
-.main-subtitle {
-    font-size: 13px;
-    color: #6b8cad;
-    margin-top: 4px;
-    font-family: 'DM Mono', monospace;
-}
+.main-title { font-size: 26px; font-weight: 700; color: #e8f4fd; margin:0; letter-spacing:-0.5px; }
+.main-subtitle { font-size: 12px; color: #6b8cad; margin-top:4px; font-family:'DM Mono',monospace; }
 
-/* Metric cards */
-.metric-card {
-    background: #111827;
-    border: 1px solid #1e2d3d;
-    border-radius: 10px;
-    padding: 16px 20px;
-    text-align: center;
-}
-.metric-label {
-    font-size: 11px;
-    color: #6b8cad;
-    text-transform: uppercase;
-    letter-spacing: 1px;
-    font-weight: 600;
-}
-.metric-value {
-    font-size: 22px;
-    font-weight: 700;
-    color: #e8f4fd;
-    font-family: 'DM Mono', monospace;
-    margin-top: 4px;
-}
-
-/* Table styling */
-.dataframe { font-family: 'DM Mono', monospace !important; font-size: 12px !important; }
-
-/* Tabs */
-.stTabs [data-baseweb="tab-list"] {
-    background: #111827;
-    border-radius: 8px;
-    padding: 4px;
-    gap: 4px;
-}
-.stTabs [data-baseweb="tab"] {
-    color: #6b8cad;
-    font-weight: 500;
-    border-radius: 6px;
-}
-.stTabs [aria-selected="true"] {
-    background: #1e3a5f !important;
-    color: #e8f4fd !important;
-}
-
-/* Green/Red colouring */
-.pos { color: #27ae60 !important; font-weight: 600; }
-.neg { color: #e74c3c !important; font-weight: 600; }
-
-/* Section headers */
 .section-header {
-    font-size: 13px;
-    font-weight: 600;
-    color: #6b8cad;
-    text-transform: uppercase;
-    letter-spacing: 1.5px;
+    font-size: 12px; font-weight: 600; color: #6b8cad;
+    text-transform: uppercase; letter-spacing: 1.5px;
     border-bottom: 1px solid #1e2d3d;
-    padding-bottom: 8px;
-    margin-bottom: 16px;
+    padding-bottom: 8px; margin-bottom: 14px;
 }
-
-/* Last updated badge */
 .update-badge {
-    font-family: 'DM Mono', monospace;
-    font-size: 11px;
-    color: #4a6741;
-    background: #0d1f0d;
-    border: 1px solid #1a3d1a;
-    border-radius: 4px;
-    padding: 2px 8px;
-    display: inline-block;
+    font-family:'DM Mono',monospace; font-size:11px; color:#4a6741;
+    background:#0d1f0d; border:1px solid #1a3d1a; border-radius:4px;
+    padding:2px 8px; display:inline-block;
+}
+.alert-box {
+    background:#1a0d0d; border:1px solid #5c1a1a; border-radius:8px;
+    padding:10px 14px; margin:4px 0; font-size:13px; color:#e8b4b4;
+}
+.alert-box-green {
+    background:#0d1a0d; border:1px solid #1a5c1a; border-radius:8px;
+    padding:10px 14px; margin:4px 0; font-size:13px; color:#b4e8b4;
+}
+.stTabs [data-baseweb="tab-list"] {
+    background:#111827; border-radius:8px; padding:4px; gap:2px;
+}
+.stTabs [data-baseweb="tab"] { color:#6b8cad; font-weight:500; border-radius:6px; }
+.stTabs [aria-selected="true"] { background:#1e3a5f !important; color:#e8f4fd !important; }
+.stage2-badge {
+    background:#0d2010; border:1px solid #27ae60; border-radius:6px;
+    padding:2px 8px; font-size:11px; color:#27ae60;
+    font-family:'DM Mono',monospace; font-weight:600;
 }
 </style>
 """, unsafe_allow_html=True)
 
-# ── Data definitions ──────────────────────────────────────────────────────────
+# ── Instrument lists ──────────────────────────────────────────────────────────
 SECTORS = [
-    ("Technology", "XLK"), ("Communication Svcs", "XLC"),
-    ("Consumer Disc.", "XLY"), ("Financials", "XLF"),
-    ("Health Care", "XLV"), ("Industrials", "XLI"),
-    ("Energy", "XLE"), ("Consumer Staples", "XLP"),
-    ("Utilities", "XLU"), ("Real Estate", "XLRE"),
-    ("Materials", "XLB"),
+    ("Technology","XLK"),("Communication Svcs","XLC"),("Consumer Disc.","XLY"),
+    ("Financials","XLF"),("Health Care","XLV"),("Industrials","XLI"),
+    ("Energy","XLE"),("Consumer Staples","XLP"),("Utilities","XLU"),
+    ("Real Estate","XLRE"),("Materials","XLB"),
 ]
-
 THEMES = [
-    ("Gold Miners", "GDX"), ("Silver Miners", "SIL"),
-    ("Copper Miners", "COPX"), ("Lithium/Battery", "LIT"),
-    ("Steel", "SLX"), ("Nuclear Energy", "NLR"),
-    ("Uranium", "URA"), ("Clean Energy", "ICLN"),
-    ("Solar", "TAN"), ("AI", "BOTZ"),
-    ("AI Infrastructure", "GRID"), ("Cybersecurity", "HACK"),
-    ("Cloud Computing", "SKYY"), ("Semiconductors", "SOXX"),
-    ("Software", "IGV"), ("Robotics", "ROBO"),
-    ("Space", "ARKX"), ("Quantum Computing", "QTUM"),
-    ("Genomics", "ARKG"), ("Medical Devices", "IHI"),
-    ("Biotech", "XBI"), ("Defence & Aerospace", "ITA"),
-    ("India", "INDA"), ("Europe", "EZU"),
-    ("Japan", "EWJ"), ("China Internet", "KWEB"),
-    ("Bitcoin/Crypto", "BITO"), ("Bitcoin Miners", "WGMI"),
-    ("Long Term Treasuries", "TLT"), ("Short Term Treasuries", "SHY"),
-    ("Inflation/TIPS", "TIP"), ("US Dollar", "UUP"),
-    ("Dividend Growth", "DGRO"), ("Low Volatility", "USMV"),
-    ("Growth Stocks", "VUG"), ("Oil & Gas", "XOP"),
-    ("Transports", "IYT"), ("Home Construction", "XHB"),
-    ("Retail", "XRT"), ("Airlines", "JETS"),
-    ("Casinos/Gaming", "BJK"), ("Telecom", "IYZ"),
-    ("Fintech", "FINX"), ("Social Media", "SOCL"),
-    ("Emerging Mkts Tech", "EMQQ"), ("Commodities", "PDBC"),
+    ("Gold Miners","GDX"),("Silver Miners","SIL"),("Copper Miners","COPX"),
+    ("Lithium/Battery","LIT"),("Steel","SLX"),("Nuclear Energy","NLR"),
+    ("Uranium","URA"),("Clean Energy","ICLN"),("Solar","TAN"),
+    ("AI","BOTZ"),("AI Infrastructure","GRID"),("Cybersecurity","HACK"),
+    ("Cloud Computing","SKYY"),("Semiconductors","SOXX"),("Software","IGV"),
+    ("Robotics","ROBO"),("Space","ARKX"),("Quantum Computing","QTUM"),
+    ("Genomics","ARKG"),("Medical Devices","IHI"),("Biotech","XBI"),
+    ("Defence & Aerospace","ITA"),("India","INDA"),("Europe","EZU"),
+    ("Japan","EWJ"),("China Internet","KWEB"),("Bitcoin/Crypto","BITO"),
+    ("Bitcoin Miners","WGMI"),("Long Term Treasuries","TLT"),
+    ("Short Term Treasuries","SHY"),("Inflation/TIPS","TIP"),
+    ("US Dollar","UUP"),("Dividend Growth","DGRO"),("Low Volatility","USMV"),
+    ("Growth Stocks","VUG"),("Oil & Gas","XOP"),("Transports","IYT"),
+    ("Home Construction","XHB"),("Retail","XRT"),("Airlines","JETS"),
+    ("Casinos/Gaming","BJK"),("Telecom","IYZ"),("Fintech","FINX"),
+    ("Social Media","SOCL"),("Emerging Mkts Tech","EMQQ"),("Commodities","PDBC"),
 ]
-
-BREADTH = [
-    ("S&P 500", "SPY"), ("Nasdaq 100", "QQQ"), ("Russell 2000", "IWM"),
-]
-
+BREADTH = [("S&P 500","SPY"),("Nasdaq 100","QQQ"),("Russell 2000","IWM")]
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    "Accept-Language": "en-US,en;q=0.9",
+    "User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Accept-Language":"en-US,en;q=0.9",
 }
+
+# ── Session state init ────────────────────────────────────────────────────────
+if "watchlist" not in st.session_state:
+    st.session_state.watchlist = ["AAPL","NVDA","MSFT","TSLA"]
+if "history" not in st.session_state:
+    st.session_state.history = {}
+if "stage2_results" not in st.session_state:
+    st.session_state.stage2_results = None
+if "stage2_timestamp" not in st.session_state:
+    st.session_state.stage2_timestamp = None
 
 # ── Helper functions ──────────────────────────────────────────────────────────
 def safe_pct(new, old):
-    if old and old != 0:
-        return round((new - old) / abs(old) * 100, 2)
+    if old and old != 0: return round((new-old)/abs(old)*100, 2)
     return None
 
 def ema_calc(prices, period):
     if len(prices) < period: return None
-    k = 2 / (period + 1)
-    val = sum(prices[:period]) / period
-    for p in prices[period:]: val = p * k + val * (1 - k)
+    k = 2/(period+1); val = sum(prices[:period])/period
+    for p in prices[period:]: val = p*k + val*(1-k)
     return round(val, 2)
 
 def sma_calc(prices, period):
     if len(prices) < period: return None
-    return round(sum(prices[-period:]) / period, 2)
+    return round(sum(prices[-period:])/period, 2)
 
-def fmt_pct(val, decimals=2):
+def rs_rating(ticker_ret_1y, spy_ret_1y):
+    """Simplified RS rating 1-99 vs S&P 500."""
+    if ticker_ret_1y is None or spy_ret_1y is None: return None
+    diff = ticker_ret_1y - spy_ret_1y
+    # Map diff to 1-99 scale (rough approximation)
+    rating = 50 + diff * 0.5
+    return max(1, min(99, round(rating)))
+
+def to_finviz_url(name):
+    code = re.sub(r'[^a-z0-9]','',name.lower())
+    return f"https://finviz.com/screener.ashx?f=ind_{code}&v=211"
+
+def fmt_pct(val):
     if val is None: return "—"
     sign = "+" if val >= 0 else ""
-    return f"{sign}{val:.{decimals}f}%"
+    return f"{sign}{val:.2f}%"
 
-def color_val(val):
-    """Return HTML-coloured percentage string."""
-    if val is None: return "<span style='color:#4a5568'>—</span>"
-    color = "#27ae60" if val >= 0 else "#e74c3c"
-    sign = "+" if val >= 0 else ""
-    return f"<span style='color:{color};font-weight:600'>{sign}{val:.2f}%</span>"
+def fmt_large(val):
+    if not val: return "—"
+    if val >= 1e12: return f"${val/1e12:.1f}T"
+    if val >= 1e9:  return f"${val/1e9:.1f}B"
+    if val >= 1e6:  return f"${val/1e6:.0f}M"
+    return f"${val:,.0f}"
 
 # ── Data fetchers ─────────────────────────────────────────────────────────────
-@st.cache_data(ttl=900)  # cache for 15 minutes
+@st.cache_data(ttl=900)
 def fetch_ticker(ticker):
     try:
         tk = yf.Ticker(ticker)
         hist = tk.history(period="1y", interval="1d")
         if hist.empty or len(hist) < 5: return None
         prices = [float(x) for x in hist["Close"]]
+        vols   = [float(x) for x in hist["Volume"]]
         price  = round(prices[-1], 2)
+        high52 = round(max(prices), 2)
+        low52  = round(min(prices), 2)
+        try:
+            info    = tk.fast_info
+            company = getattr(info,"company_name", ticker) or ticker
+            mktcap  = getattr(info,"market_cap", 0) or 0
+        except Exception:
+            company = ticker; mktcap = 0
         return {
             "price":    price,
+            "company":  company,
+            "mktcap":   mktcap,
             "ret_1d":   safe_pct(price, prices[-2])  if len(prices)>=2  else None,
             "ret_1w":   safe_pct(price, prices[-6])  if len(prices)>=6  else None,
             "ret_1m":   safe_pct(price, prices[-22]) if len(prices)>=22 else None,
             "ret_3m":   safe_pct(price, prices[-66]) if len(prices)>=66 else None,
             "ret_1y":   safe_pct(price, prices[0]),
-            "high_52w": round(max(prices), 2),
-            "low_52w":  round(min(prices), 2),
-            "pct_off_high": round((price - max(prices)) / max(prices) * 100, 2),
-            "ema10":  ema_calc(prices, 10),
-            "sma20":  sma_calc(prices, 20),
-            "sma50":  sma_calc(prices, 50),
-            "sma200": sma_calc(prices, 200),
+            "high_52w": high52,
+            "low_52w":  low52,
+            "pct_off":  round((price-high52)/high52*100, 2),
+            "avg_vol":  int(sum(vols[-50:])/50),
+            "ema10":    ema_calc(prices, 10),
+            "sma20":    sma_calc(prices, 20),
+            "sma50":    sma_calc(prices, 50),
+            "sma150":   sma_calc(prices, 150),
+            "sma200":   sma_calc(prices, 200),
         }
     except Exception:
         return None
 
 @st.cache_data(ttl=900)
-def fetch_finviz_industries():
+def fetch_spy_ret():
+    d = fetch_ticker("SPY")
+    return d["ret_1y"] if d else 0
+
+@st.cache_data(ttl=900)
+def fetch_finviz():
     try:
         url = "https://finviz.com/groups.ashx?g=industry&v=140&o=name&st=d1"
         resp = requests.get(url, headers=HEADERS, timeout=20)
         soup = BeautifulSoup(resp.content, "html.parser")
         table = None
-        for sel in [{"class":"groups_table"}, {"id":"groups-table"}]:
+        for sel in [{"class":"groups_table"},{"id":"groups-table"}]:
             table = soup.find("table", sel)
             if table: break
         if not table:
@@ -246,7 +218,7 @@ def fetch_finviz_industries():
                     table = t; break
         if not table: return pd.DataFrame()
 
-        SECTOR_MAP = {
+        SMAP = {
             "Agricultural Inputs":"Basic Materials","Aluminum":"Basic Materials",
             "Building Materials":"Basic Materials","Chemicals":"Basic Materials",
             "Coking Coal":"Basic Materials","Copper":"Basic Materials","Gold":"Basic Materials",
@@ -322,404 +294,736 @@ def fetch_finviz_industries():
 
         def to_f(s):
             s = str(s).strip().replace("%","").replace("+","").replace(" ","")
-            try: return float(s) / 100
+            try: return float(s)/100
             except: return None
 
         rows = []
         for tr in table.find_all("tr"):
             cells = tr.find_all("td")
             if not cells or len(cells) < 5: continue
-            name = cells[1].get_text(strip=True) if len(cells) > 1 else ""
+            name = cells[1].get_text(strip=True) if len(cells)>1 else ""
             if not name or name in ("Name","Industry",""): continue
             n = len(cells)
-            ret_1w = to_f(cells[2].get_text()) if n>2 else None
-            ret_1m = to_f(cells[3].get_text()) if n>3 else None
-            ret_3m = to_f(cells[4].get_text()) if n>4 else None
-            ret_6m = to_f(cells[5].get_text()) if n>5 else None
-            ret_1y = to_f(cells[6].get_text()) if n>6 else None
-            ret_1d = to_f(cells[10].get_text()) if n>10 else None
-            comp   = (ret_1w or 0) + (ret_1m or 0) + (ret_3m or 0)
-            rows.append({
-                "Industry": name,
-                "Sector":   SECTOR_MAP.get(name, "Other"),
-                "1D %":     ret_1d,
-                "1W %":     ret_1w,
-                "1M %":     ret_1m,
-                "3M %":     ret_3m,
-                "6M %":     ret_6m,
-                "1Y %":     ret_1y,
-                "Composite":comp,
-            })
+            r1w=to_f(cells[2].get_text()) if n>2 else None
+            r1m=to_f(cells[3].get_text()) if n>3 else None
+            r3m=to_f(cells[4].get_text()) if n>4 else None
+            r6m=to_f(cells[5].get_text()) if n>5 else None
+            r1y=to_f(cells[6].get_text()) if n>6 else None
+            r1d=to_f(cells[10].get_text()) if n>10 else None
+            comp=(r1w or 0)+(r1m or 0)+(r3m or 0)
+            rows.append({"Industry":name,"Sector":SMAP.get(name,"Other"),
+                         "1D %":r1d,"1W %":r1w,"1M %":r1m,"3M %":r3m,
+                         "6M %":r6m,"1Y %":r1y,"Composite":comp})
 
         df = pd.DataFrame(rows)
         if not df.empty:
-            df = df.sort_values("Composite", ascending=False).reset_index(drop=True)
-            df.index += 1  # rank starts at 1
-            df.index.name = "Rank"
+            df = df.sort_values("Composite",ascending=False).reset_index(drop=True)
+            df.index += 1; df.index.name = "Rank"
         return df
-    except Exception as e:
+    except Exception:
         return pd.DataFrame()
 
 def build_etf_df(pairs):
+    spy_ret = fetch_spy_ret()
     rows = []
     for name, ticker in pairs:
         d = fetch_ticker(ticker)
         if d:
-            rows.append({
-                "Name": name, "Ticker": ticker,
-                "Price": d["price"],
-                "1D %": d["ret_1d"], "1W %": d["ret_1w"],
-                "1M %": d["ret_1m"], "3M %": d["ret_3m"], "1Y %": d["ret_1y"],
-                "% off High": d["pct_off_high"],
-            })
+            rs = rs_rating(d["ret_1y"], spy_ret)
+            comp = (d["ret_1w"] or 0)+(d["ret_1m"] or 0)+(d["ret_3m"] or 0)
+            rows.append({"Name":name,"Ticker":ticker,"Price":d["price"],
+                         "1D %":d["ret_1d"],"1W %":d["ret_1w"],
+                         "1M %":d["ret_1m"],"3M %":d["ret_3m"],"1Y %":d["ret_1y"],
+                         "% off High":d["pct_off"],"RS Rating":rs,"Composite":comp})
     df = pd.DataFrame(rows)
     if not df.empty:
-        df["Composite"] = (
-            (df["1W %"].fillna(0) + df["1M %"].fillna(0) + df["3M %"].fillna(0))
-        )
-        df = df.sort_values("Composite", ascending=False).reset_index(drop=True)
-        df.index += 1
-        df.index.name = "Rank"
+        df = df.sort_values("Composite",ascending=False).reset_index(drop=True)
+        df.index += 1; df.index.name = "Rank"
     return df
 
+def get_industry_tickers(industry_name, max_pages=5):
+    """Get stock tickers for an industry from Finviz screener."""
+    code = re.sub(r'[^a-z0-9]','',industry_name.lower())
+    tickers = []
+    for page in range(1, max_pages+1):
+        start = (page-1)*20+1
+        url = f"https://finviz.com/screener.ashx?v=111&f=ind_{code}&r={start}&o=ticker"
+        try:
+            resp = requests.get(url, headers=HEADERS, timeout=15)
+            page_tickers = []
+            soup = BeautifulSoup(resp.content, "html.parser")
+            for a in soup.find_all("a", href=re.compile(r'quote\.ashx\?t=')):
+                t = a.get_text(strip=True)
+                if t and 1<=len(t)<=6 and re.match(r'^[A-Z][A-Z0-9.]*$',t):
+                    page_tickers.append(t)
+            if not page_tickers: break
+            tickers.extend(page_tickers)
+            if len(page_tickers) < 20: break
+            time.sleep(0.3)
+        except Exception:
+            break
+    return list(dict.fromkeys(tickers))
+
+def check_stage2(ticker, min_price=8.0, min_vol=100000):
+    """Check Stage 2: Price > MA50 > MA150 > MA200, min price & volume."""
+    try:
+        tk = yf.Ticker(ticker)
+        hist = tk.history(period="1y", interval="1d")
+        if hist.empty or len(hist) < 200: return None
+        prices = [float(x) for x in hist["Close"]]
+        vols   = [float(x) for x in hist["Volume"]]
+        price  = prices[-1]
+        avg_vol = sum(vols[-50:])/50
+        if price < min_price or avg_vol < min_vol: return None
+        ma50  = sum(prices[-50:])/50
+        ma150 = sum(prices[-150:])/150
+        ma200 = sum(prices[-200:])/200
+        if not (price > ma50 > ma150 > ma200): return None
+        spy_ret = fetch_spy_ret()
+        ret_1y  = safe_pct(price, prices[0])
+        rs = rs_rating(ret_1y, spy_ret)
+        try:
+            info    = tk.fast_info
+            company = getattr(info,"company_name",ticker) or ticker
+            mktcap  = getattr(info,"market_cap",0) or 0
+        except Exception:
+            company = ticker; mktcap = 0
+        return {
+            "Ticker":ticker,"Company":company,
+            "Price":round(price,2),
+            "MA50":round(ma50,2),"MA150":round(ma150,2),"MA200":round(ma200,2),
+            "1D %":safe_pct(price,prices[-2]) if len(prices)>=2 else None,
+            "1W %":safe_pct(price,prices[-6]) if len(prices)>=6 else None,
+            "% off 52W High":round((price-max(prices))/max(prices)*100,1),
+            "% from 52W Low":round((price-min(prices))/min(prices)*100,1),
+            "RS Rating":rs,
+            "Avg Vol":int(avg_vol),
+            "Mkt Cap":mktcap,
+        }
+    except Exception:
+        return None
+
+# ── Download helper ───────────────────────────────────────────────────────────
+def to_excel_bytes(dfs_dict):
+    """Convert dict of {sheetname: df} to Excel bytes for download."""
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        for sheet, df in dfs_dict.items():
+            df.to_excel(writer, sheet_name=sheet[:31])
+    return buf.getvalue()
+
 # ── Chart helpers ─────────────────────────────────────────────────────────────
-def bar_chart(df, col, title, n=15, height=400):
+DARK = dict(paper_bgcolor="#111827",plot_bgcolor="#111827",
+            font=dict(color="#aab8c2",family="DM Mono"))
+
+def bar_chart(df, col, title, n=15, height=420):
     sub = df.dropna(subset=[col]).copy()
-    sub = pd.concat([sub.head(n), sub.tail(n)]).drop_duplicates()
-    sub = sub.sort_values(col, ascending=True)
-    colors = ["#27ae60" if v >= 0 else "#e74c3c" for v in sub[col]]
-    name_col = "Industry" if "Industry" in sub.columns else "Name"
+    top = sub.sort_values(col,ascending=False).head(n)
+    bot = sub.sort_values(col,ascending=True).head(5)
+    combined = pd.concat([bot,top]).drop_duplicates().sort_values(col,ascending=True)
+    name_col = "Industry" if "Industry" in combined.columns else "Name"
+    vals = combined[col]*100 if combined[col].abs().max()<2 else combined[col]
+    colors = ["#27ae60" if v>=0 else "#e74c3c" for v in vals]
     fig = go.Figure(go.Bar(
-        x=sub[col] * 100,
-        y=sub[name_col],
-        orientation="h",
+        x=vals, y=combined[name_col], orientation="h",
         marker_color=colors,
-        text=[f"{v*100:+.2f}%" for v in sub[col]],
-        textposition="outside",
-        textfont=dict(size=10, color="#aab8c2"),
+        text=[f"{v:+.2f}%" for v in vals],
+        textposition="outside", textfont=dict(size=9,color="#aab8c2"),
     ))
-    fig.update_layout(
-        title=dict(text=title, font=dict(color="#e8f4fd", size=14)),
-        paper_bgcolor="#111827",
-        plot_bgcolor="#111827",
-        font=dict(color="#aab8c2", family="DM Mono"),
-        xaxis=dict(gridcolor="#1e2d3d", zerolinecolor="#2d3f50", ticksuffix="%"),
-        yaxis=dict(gridcolor="#1e2d3d", tickfont=dict(size=10)),
-        height=height,
-        margin=dict(l=10, r=60, t=40, b=10),
-        showlegend=False,
+    fig.update_layout(**DARK, title=dict(text=title,font=dict(color="#e8f4fd",size=13)),
+                      xaxis=dict(gridcolor="#1e2d3d",zerolinecolor="#2d3f50",ticksuffix="%"),
+                      yaxis=dict(gridcolor="#1e2d3d",tickfont=dict(size=9)),
+                      height=height, margin=dict(l=10,r=70,t=40,b=10), showlegend=False)
+    return fig
+
+def scatter_rotation(df):
+    """Sector rotation scatter: 1M vs 3M."""
+    sub = df.dropna(subset=["1M %","3M %"]).copy()
+    name_col = "Industry" if "Industry" in sub.columns else "Name"
+    x = sub["3M %"]*100 if sub["3M %"].abs().max()<2 else sub["3M %"]
+    y = sub["1M %"]*100 if sub["1M %"].abs().max()<2 else sub["1M %"]
+    colors = []
+    quadrants = []
+    for xi, yi in zip(x, y):
+        if xi>0 and yi>0:   colors.append("#27ae60"); quadrants.append("Leading")
+        elif xi<0 and yi>0: colors.append("#3498db"); quadrants.append("Improving")
+        elif xi>0 and yi<0: colors.append("#e67e22"); quadrants.append("Fading")
+        else:                colors.append("#e74c3c"); quadrants.append("Lagging")
+
+    fig = go.Figure()
+    fig.add_shape(type="line",x0=0,x1=0,y0=y.min()-2,y1=y.max()+2,
+                  line=dict(color="#2d3f50",width=1,dash="dot"))
+    fig.add_shape(type="line",x0=x.min()-2,x1=x.max()+2,y0=0,y1=0,
+                  line=dict(color="#2d3f50",width=1,dash="dot"))
+
+    for q, color in [("Leading","#27ae60"),("Improving","#3498db"),
+                     ("Fading","#e67e22"),("Lagging","#e74c3c")]:
+        mask = [qi==q for qi in quadrants]
+        if not any(mask): continue
+        fig.add_trace(go.Scatter(
+            x=x[mask], y=y[mask],
+            mode="markers+text",
+            text=sub[name_col][mask],
+            textposition="top center",
+            textfont=dict(size=8,color="#aab8c2"),
+            marker=dict(size=10,color=color,opacity=0.85,
+                        line=dict(width=1,color="#1e2d3d")),
+            name=q, hovertemplate=f"<b>%{{text}}</b><br>3M: %{{x:.1f}}%<br>1M: %{{y:.1f}}%<extra></extra>"
+        ))
+
+    # Quadrant labels
+    for txt, x_pos, y_pos in [
+        ("▲ LEADING",    x.max()*0.7, y.max()*0.85),
+        ("↗ IMPROVING",  x.min()*0.7, y.max()*0.85),
+        ("↘ FADING",     x.max()*0.7, y.min()*0.85),
+        ("▼ LAGGING",    x.min()*0.7, y.min()*0.85),
+    ]:
+        fig.add_annotation(x=x_pos,y=y_pos,text=txt,
+                           font=dict(size=10,color="#2d3f50"),showarrow=False)
+
+    fig.update_layout(**DARK,
+        title=dict(text="Sector Rotation — 3M (x) vs 1M (y)",
+                   font=dict(color="#e8f4fd",size=13)),
+        xaxis=dict(title="3M Performance %",gridcolor="#1a2535",
+                   zerolinecolor="#2d3f50",ticksuffix="%"),
+        yaxis=dict(title="1M Performance %",gridcolor="#1a2535",
+                   zerolinecolor="#2d3f50",ticksuffix="%"),
+        height=500, margin=dict(l=60,r=20,t=50,b=50),
+        showlegend=True,
+        legend=dict(bgcolor="#111827",bordercolor="#1e2d3d",borderwidth=1)
     )
     return fig
 
-def styled_df(df, pct_cols):
-    """Format a dataframe with colour-coded percentage columns."""
-    def fmt_cell(val, col):
-        if pd.isna(val) or val is None: return "—"
-        if col in pct_cols:
-            v = val * 100 if abs(val) < 1 else val
-            sign = "+" if v >= 0 else ""
-            return f"{sign}{v:.2f}%"
-        if col == "Price": return f"${val:.2f}"
-        if col == "% off High": return f"{val:+.1f}%"
-        return str(val)
+def heatmap_52w(df):
+    """52W High/Low heatmap."""
+    sub = df.dropna(subset=["% off High"]).copy()
+    name_col = "Industry" if "Industry" in sub.columns else "Name"
+    vals = sub["% off High"]*100 if sub["% off High"].abs().max()<2 else sub["% off High"]
+    sub = sub.copy(); sub["val"] = vals
+    sub = sub.sort_values("val", ascending=False)
 
-    styled = df.copy()
+    fig = go.Figure(go.Bar(
+        x=sub[name_col], y=sub["val"],
+        marker=dict(
+            color=sub["val"],
+            colorscale=[[0,"#e74c3c"],[0.5,"#e67e22"],[0.8,"#f1c40f"],[1,"#27ae60"]],
+            cmin=-50, cmax=0,
+            colorbar=dict(title="% off High",ticksuffix="%",
+                          thickness=12,len=0.6)
+        ),
+        text=[f"{v:.1f}%" for v in sub["val"]],
+        textposition="outside", textfont=dict(size=8,color="#aab8c2"),
+    ))
+    fig.update_layout(**DARK,
+        title=dict(text="% off 52-Week High",font=dict(color="#e8f4fd",size=13)),
+        xaxis=dict(tickangle=-45,tickfont=dict(size=8),gridcolor="#1a2535"),
+        yaxis=dict(gridcolor="#1a2535",ticksuffix="%",title=""),
+        height=420, margin=dict(l=20,r=20,t=50,b=120), showlegend=False
+    )
+    return fig
+
+def fmt_df_pct(df, pct_cols, multiplier=1):
+    """Format dataframe percentage columns for display."""
+    display = df.copy()
     for col in pct_cols:
-        if col in styled.columns:
-            styled[col] = styled[col].apply(lambda x: fmt_cell(x, col))
+        if col in display.columns:
+            display[col] = display[col].apply(
+                lambda x: f"{x*multiplier:+.2f}%" if pd.notna(x) and x is not None else "—"
+            )
+    return display
 
-    return styled
+# ── Alerts checker ────────────────────────────────────────────────────────────
+def check_alerts(df_themes, df_sectors, df_fv):
+    alerts = []
+    # Theme composite crossovers
+    if not df_themes.empty:
+        for _, r in df_themes.iterrows():
+            comp = r.get("Composite", 0)
+            name = r.get("Name","")
+            if comp > 10:
+                alerts.append(("🚀", f"{name} — composite score extremely strong: {comp:+.1f}%", "green"))
+            elif comp < -10:
+                alerts.append(("⚠️", f"{name} — composite score very weak: {comp:+.1f}%", "red"))
 
-# ── Main app ──────────────────────────────────────────────────────────────────
-def main():
-    # Header
-    now = datetime.now().strftime("%d %b %Y  %H:%M")
-    st.markdown(f"""
-    <div class="main-header">
-        <div style="display:flex;justify-content:space-between;align-items:center">
-            <div>
-                <div class="main-title">🇺🇸 US Market Theme & Breadth Tracker</div>
-                <div class="main-subtitle">Live data · Yahoo Finance + Finviz · Auto-refreshes every 15 min</div>
-            </div>
-            <div class="update-badge">⬤ LIVE · {now}</div>
-        </div>
+    # Breadth alerts
+    if not df_sectors.empty:
+        bullish = sum(1 for _, r in df_sectors.iterrows()
+                      if r.get("1M %") and r.get("1M %") > 0)
+        total = len(df_sectors)
+        pct = round(bullish/total*100) if total else 0
+        if pct >= 70:
+            alerts.append(("✅", f"Broad market bullish — {bullish}/{total} sectors positive 1M", "green"))
+        elif pct <= 30:
+            alerts.append(("🔴", f"Market breadth weak — only {bullish}/{total} sectors positive 1M", "red"))
+
+    # Finviz: extreme movers
+    if not df_fv.empty:
+        top = df_fv.dropna(subset=["1D %"]).sort_values("1D %",ascending=False).head(3)
+        bot = df_fv.dropna(subset=["1D %"]).sort_values("1D %").head(3)
+        for _, r in top.iterrows():
+            if r["1D %"] and r["1D %"]*100 > 2:
+                alerts.append(("🔥", f"{r['Industry']} industry up {r['1D %']*100:+.2f}% today", "green"))
+        for _, r in bot.iterrows():
+            if r["1D %"] and r["1D %"]*100 < -2:
+                alerts.append(("💧", f"{r['Industry']} industry down {r['1D %']*100:+.2f}% today", "red"))
+
+    return alerts[:12]  # cap at 12
+
+# ── Sidebar ───────────────────────────────────────────────────────────────────
+with st.sidebar:
+    st.markdown("### 📋 Watchlist")
+    wl_input = st.text_input("Add ticker:", placeholder="e.g. AAPL")
+    if st.button("Add") and wl_input:
+        t = wl_input.strip().upper()
+        if t not in st.session_state.watchlist:
+            st.session_state.watchlist.append(t)
+
+    if st.session_state.watchlist:
+        remove = st.selectbox("Remove:", ["—"]+st.session_state.watchlist)
+        if st.button("Remove") and remove != "—":
+            st.session_state.watchlist.remove(remove)
+
+        st.markdown("---")
+        spy_ret = fetch_spy_ret()
+        for ticker in st.session_state.watchlist:
+            d = fetch_ticker(ticker)
+            if d:
+                rs = rs_rating(d["ret_1y"], spy_ret)
+                chg = d["ret_1d"] or 0
+                color = "#27ae60" if chg >= 0 else "#e74c3c"
+                sign  = "+" if chg >= 0 else ""
+                st.markdown(
+                    f"<div style='padding:8px;border-bottom:1px solid #1e2d3d'>"
+                    f"<span style='color:#e8f4fd;font-weight:700'>{ticker}</span> "
+                    f"<span style='color:{color};font-family:DM Mono;font-size:12px'>"
+                    f"${d['price']:.2f} ({sign}{chg:.2f}%)</span><br>"
+                    f"<span style='color:#6b8cad;font-size:11px'>RS: {rs or '—'} | "
+                    f"1M: {fmt_pct(d['ret_1m'])} | MA50: ${d['sma50'] or 0:.2f}</span></div>",
+                    unsafe_allow_html=True
+                )
+            else:
+                st.markdown(f"<div style='color:#6b8cad;padding:4px'>{ticker} — no data</div>",
+                            unsafe_allow_html=True)
+
+    st.markdown("---")
+    st.markdown("### ⚙️ Settings")
+    min_price = st.slider("Stage 2 Min Price ($)", 1, 50, 8)
+    min_vol   = st.slider("Stage 2 Min Avg Vol (K)", 50, 500, 100) * 1000
+    top_n     = st.slider("Top N Industries for Stage 2", 10, 60, 40)
+
+    if st.button("🔄 Clear Cache & Refresh"):
+        st.cache_data.clear()
+        st.rerun()
+
+# ── Main header ───────────────────────────────────────────────────────────────
+now = datetime.now().strftime("%d %b %Y  %H:%M")
+st.markdown(f"""
+<div class="main-header">
+  <div style="display:flex;justify-content:space-between;align-items:center">
+    <div>
+      <div class="main-title">🇺🇸 US Market Theme & Breadth Tracker</div>
+      <div class="main-subtitle">Yahoo Finance + Finviz · 15-min delayed · Auto-refresh every 15 min</div>
     </div>
-    """, unsafe_allow_html=True)
+    <div class="update-badge">⬤ LIVE · {now}</div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
 
-    # Tabs
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "📊 S&P 500 Sectors",
-        "🔥 Theme Scorecard",
-        "🧭 Breadth Monitor",
-        "🏭 Finviz Industries",
-    ])
+# ── Load core data ────────────────────────────────────────────────────────────
+with st.spinner("Loading market data..."):
+    df_sec = build_etf_df(SECTORS)
+    df_th  = build_etf_df(THEMES)
+    df_fv  = fetch_finviz()
 
-    # ── Tab 1: Sectors ────────────────────────────────────────────────────────
-    with tab1:
-        with st.spinner("Loading sector data..."):
-            df_sec = build_etf_df(SECTORS)
+# ── Alerts bar ────────────────────────────────────────────────────────────────
+alerts = check_alerts(df_th, df_sec, df_fv)
+if alerts:
+    with st.expander(f"🔔 {len(alerts)} Alerts", expanded=False):
+        for icon, msg, kind in alerts:
+            cls = "alert-box-green" if kind=="green" else "alert-box"
+            st.markdown(f'<div class="{cls}">{icon} {msg}</div>', unsafe_allow_html=True)
 
-        if not df_sec.empty:
-            col1, col2 = st.columns([3, 2])
+# ── Tabs ──────────────────────────────────────────────────────────────────────
+tabs = st.tabs([
+    "📊 Sectors",
+    "🔥 Themes",
+    "🧭 Breadth",
+    "🏭 Industries",
+    "📈 Stage 2",
+    "🔄 Rotation",
+    "📉 52W Map",
+    "📅 History",
+])
+tab_sec, tab_th, tab_br, tab_fv, tab_s2, tab_rot, tab_hw, tab_hist = tabs
 
-            with col1:
-                st.markdown('<div class="section-header">S&P 500 Sectors — Returns</div>',
-                            unsafe_allow_html=True)
-                pct_cols = ["1D %","1W %","1M %","3M %","1Y %","% off High","Composite"]
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 1 — SECTORS
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_sec:
+    if not df_sec.empty:
+        c1, c2 = st.columns([3,2])
+        with c1:
+            st.markdown('<div class="section-header">S&P 500 Sectors</div>',unsafe_allow_html=True)
+            display = df_sec.copy()
+            for col in ["1D %","1W %","1M %","3M %","1Y %","Composite"]:
+                display[col] = display[col].apply(lambda x: f"{x:+.2f}%" if pd.notna(x) else "—")
+            display["Price"] = display["Price"].apply(lambda x: f"${x:.2f}")
+            display["% off High"] = display["% off High"].apply(lambda x: f"{x:+.1f}%")
+            st.dataframe(display[["Name","Ticker","Price","1D %","1W %","1M %","3M %","1Y %","% off High","RS Rating","Composite"]],
+                         use_container_width=True, height=420)
+            # Download
+            dl = df_sec.copy()
+            st.download_button("📥 Download Excel", to_excel_bytes({"Sectors":dl}),
+                               "sectors.xlsx","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        with c2:
+            period = st.selectbox("Period",["1M %","1W %","1D %","3M %","1Y %"],key="sec_p")
+            st.plotly_chart(bar_chart(df_sec,period,f"Sectors — {period}",n=11,height=420),
+                            use_container_width=True)
 
-                def highlight_pct(val):
-                    if not isinstance(val, str) or val == "—": return ""
-                    try:
-                        v = float(val.replace("%","").replace("+",""))
-                        if v > 0: return "color: #27ae60; font-weight: 600"
-                        if v < 0: return "color: #e74c3c; font-weight: 600"
-                    except: pass
-                    return ""
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 2 — THEMES
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_th:
+    if not df_th.empty:
+        # Summary row
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.markdown('<div class="section-header">🚀 Top 5 Today</div>',unsafe_allow_html=True)
+            top5 = df_th.dropna(subset=["1D %"]).sort_values("1D %",ascending=False).head(5)
+            for _,r in top5.iterrows():
+                st.markdown(
+                    f"<div style='display:flex;justify-content:space-between;padding:5px 0;"
+                    f"border-bottom:1px solid #1e2d3d'>"
+                    f"<span style='color:#e8f4fd;font-size:12px'>{r['Name']}</span>"
+                    f"<span style='color:#27ae60;font-weight:700;font-family:DM Mono;font-size:12px'>"
+                    f"+{r['1D %']:.2f}%</span></div>",unsafe_allow_html=True)
+        with c2:
+            st.markdown('<div class="section-header">📉 Bottom 5 Today</div>',unsafe_allow_html=True)
+            bot5 = df_th.dropna(subset=["1D %"]).sort_values("1D %").head(5)
+            for _,r in bot5.iterrows():
+                st.markdown(
+                    f"<div style='display:flex;justify-content:space-between;padding:5px 0;"
+                    f"border-bottom:1px solid #1e2d3d'>"
+                    f"<span style='color:#e8f4fd;font-size:12px'>{r['Name']}</span>"
+                    f"<span style='color:#e74c3c;font-weight:700;font-family:DM Mono;font-size:12px'>"
+                    f"{r['1D %']:.2f}%</span></div>",unsafe_allow_html=True)
+        with c3:
+            st.markdown('<div class="section-header">🏆 Top Composite</div>',unsafe_allow_html=True)
+            for _,r in df_th.head(5).iterrows():
+                st.markdown(
+                    f"<div style='display:flex;justify-content:space-between;padding:5px 0;"
+                    f"border-bottom:1px solid #1e2d3d'>"
+                    f"<span style='color:#e8f4fd;font-size:12px'>{r['Name']}</span>"
+                    f"<span style='color:#f39c12;font-weight:700;font-family:DM Mono;font-size:12px'>"
+                    f"{r['Composite']:+.1f}%</span></div>",unsafe_allow_html=True)
 
-                display = df_sec[["Name","Ticker","Price","1D %","1W %","1M %","3M %","1Y %","Composite"]].copy()
-                for col in ["1D %","1W %","1M %","3M %","1Y %","Composite"]:
-                    display[col] = display[col].apply(
-                        lambda x: f"{x:+.2f}%" if pd.notna(x) else "—"
-                    )
-                display["Price"] = display["Price"].apply(lambda x: f"${x:.2f}")
+        st.markdown("<br>",unsafe_allow_html=True)
+        c1, c2 = st.columns([2,3])
+        with c1:
+            period = st.selectbox("Period",["1M %","1W %","1D %","3M %","1Y %","Composite"],key="th_p")
+            st.plotly_chart(bar_chart(df_th,period,f"Themes — {period}",n=12,height=520),
+                            use_container_width=True)
+        with c2:
+            st.markdown('<div class="section-header">All Themes — Ranked by Composite</div>',unsafe_allow_html=True)
+            display = df_th.copy()
+            for col in ["1D %","1W %","1M %","3M %","1Y %","Composite"]:
+                display[col] = display[col].apply(lambda x: f"{x:+.2f}%" if pd.notna(x) else "—")
+            display["Price"] = display["Price"].apply(lambda x: f"${x:.2f}")
+            display["% off High"] = display["% off High"].apply(lambda x: f"{x:+.1f}%")
+            st.dataframe(display[["Name","Ticker","Price","1D %","1W %","1M %","3M %","1Y %","% off High","RS Rating","Composite"]],
+                         use_container_width=True, height=520)
 
-                st.dataframe(
-                    display,
-                    use_container_width=True,
-                    height=420,
-                )
+        st.download_button("📥 Download Excel", to_excel_bytes({"Themes":df_th}),
+                           "themes.xlsx","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-            with col2:
-                period = st.selectbox("Period", ["1M %","1W %","1D %","3M %","1Y %"],
-                                      key="sec_period")
-                st.plotly_chart(
-                    bar_chart(df_sec, period, f"Sectors — {period}", n=11, height=420),
-                    use_container_width=True
-                )
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 3 — BREADTH
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_br:
+    st.markdown('<div class="section-header">Breadth Monitor — EMA10 vs SMA20</div>',unsafe_allow_html=True)
+    rows = []
+    with st.spinner("Loading breadth data..."):
+        for name,ticker in BREADTH+SECTORS:
+            d = fetch_ticker(ticker)
+            if d:
+                p,e10,s20,s50,s200 = d["price"],d["ema10"],d["sma20"],d["sma50"],d["sma200"]
+                pe = p>e10 if e10 else False
+                es = e10>s20 if (e10 and s20) else False
+                ps = p>s20 if s20 else False
+                if pe and es and ps: sig="✅ BULLISH"
+                elif pe or ps:       sig="🟡 MIXED"
+                else:                sig="🔴 BEARISH"
+                rows.append({"Name":name,"Ticker":ticker,
+                             "Price":f"${p:.2f}",
+                             "EMA10":f"${e10:.2f}" if e10 else "—",
+                             "SMA20":f"${s20:.2f}" if s20 else "—",
+                             "SMA50":f"${s50:.2f}" if s50 else "—",
+                             "SMA200":f"${s200:.2f}" if s200 else "—",
+                             "P>EMA10":"✅" if pe else "❌",
+                             "EMA10>SMA20":"✅" if es else "❌",
+                             "Signal":sig,
+                             "_bull":pe and es and ps})
 
-    # ── Tab 2: Themes ─────────────────────────────────────────────────────────
-    with tab2:
-        with st.spinner("Loading theme data..."):
-            df_th = build_etf_df(THEMES)
+    if rows:
+        df_br = pd.DataFrame(rows)
+        bull = df_br["_bull"].sum(); total=len(df_br)
+        c1,c2,c3,c4 = st.columns(4)
+        c1.metric("Bullish",f"{bull}/{total}",f"{round(bull/total*100)}%")
+        c2.metric("Mixed",str((df_br["Signal"]=="🟡 MIXED").sum()))
+        c3.metric("Bearish",str((df_br["Signal"]=="🔴 BEARISH").sum()))
+        c4.metric("Market Pulse","🟢 Risk On" if bull/total>0.6 else "🔴 Risk Off" if bull/total<0.4 else "🟡 Neutral")
+        st.dataframe(df_br.drop(columns=["_bull"]),use_container_width=True,height=500)
+        st.download_button("📥 Download Excel",
+                           to_excel_bytes({"Breadth":df_br.drop(columns=["_bull"])}),
+                           "breadth.xlsx","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-        if not df_th.empty:
-            # Top/bottom summary
-            top5    = df_th.head(5)
-            bottom5 = df_th.tail(5)
-
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.markdown('<div class="section-header">🚀 Top 5 Today (1D)</div>',
-                            unsafe_allow_html=True)
-                top5_1d = df_th.dropna(subset=["1D %"]).sort_values("1D %", ascending=False).head(5)
-                for _, r in top5_1d.iterrows():
-                    st.markdown(
-                        f"<div style='display:flex;justify-content:space-between;padding:6px 0;"
-                        f"border-bottom:1px solid #1e2d3d'>"
-                        f"<span style='color:#e8f4fd;font-size:13px'>{r['Name']}</span>"
-                        f"<span style='color:#27ae60;font-weight:700;font-family:DM Mono'>"
-                        f"+{r['1D %']:.2f}%</span></div>",
-                        unsafe_allow_html=True
-                    )
-
-            with col2:
-                st.markdown('<div class="section-header">📉 Bottom 5 Today (1D)</div>',
-                            unsafe_allow_html=True)
-                bot5_1d = df_th.dropna(subset=["1D %"]).sort_values("1D %").head(5)
-                for _, r in bot5_1d.iterrows():
-                    st.markdown(
-                        f"<div style='display:flex;justify-content:space-between;padding:6px 0;"
-                        f"border-bottom:1px solid #1e2d3d'>"
-                        f"<span style='color:#e8f4fd;font-size:13px'>{r['Name']}</span>"
-                        f"<span style='color:#e74c3c;font-weight:700;font-family:DM Mono'>"
-                        f"{r['1D %']:.2f}%</span></div>",
-                        unsafe_allow_html=True
-                    )
-
-            with col3:
-                st.markdown('<div class="section-header">🏆 Top Composite (1W+1M+3M)</div>',
-                            unsafe_allow_html=True)
-                for _, r in top5.iterrows():
-                    comp = r["Composite"]
-                    st.markdown(
-                        f"<div style='display:flex;justify-content:space-between;padding:6px 0;"
-                        f"border-bottom:1px solid #1e2d3d'>"
-                        f"<span style='color:#e8f4fd;font-size:13px'>{r['Name']}</span>"
-                        f"<span style='color:#f39c12;font-weight:700;font-family:DM Mono'>"
-                        f"{comp:+.1f}%</span></div>",
-                        unsafe_allow_html=True
-                    )
-
-            st.markdown("<br>", unsafe_allow_html=True)
-
-            # Bar chart + full table
-            col1, col2 = st.columns([2, 3])
-            with col1:
-                period = st.selectbox("Period", ["1M %","1W %","1D %","3M %","1Y %","Composite"],
-                                      key="th_period")
-                st.plotly_chart(
-                    bar_chart(df_th, period, f"Top & Bottom Themes — {period}", n=10, height=500),
-                    use_container_width=True
-                )
-
-            with col2:
-                st.markdown('<div class="section-header">All Themes — Ranked by Composite</div>',
-                            unsafe_allow_html=True)
-                display = df_th[["Name","Ticker","Price","1D %","1W %","1M %","3M %","1Y %","Composite"]].copy()
-                for col in ["1D %","1W %","1M %","3M %","1Y %","Composite"]:
-                    display[col] = display[col].apply(
-                        lambda x: f"{x:+.2f}%" if pd.notna(x) else "—"
-                    )
-                display["Price"] = display["Price"].apply(lambda x: f"${x:.2f}")
-                st.dataframe(display, use_container_width=True, height=500)
-
-    # ── Tab 3: Breadth Monitor ────────────────────────────────────────────────
-    with tab3:
-        st.markdown('<div class="section-header">Market Breadth — EMA10 vs SMA20 Signal</div>',
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 4 — FINVIZ INDUSTRIES
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_fv:
+    if df_fv.empty:
+        st.warning("Could not load Finviz data. Try again in a few minutes.")
+    else:
+        st.markdown(f'<div class="section-header">{len(df_fv)} Industries — Ranked by Composite</div>',
                     unsafe_allow_html=True)
+        c1,c2 = st.columns([3,2])
+        with c1:
+            sectors = ["All"]+sorted(df_fv["Sector"].dropna().unique().tolist())
+            sel = st.selectbox("Sector filter",sectors,key="fv_s")
+            df_show = df_fv if sel=="All" else df_fv[df_fv["Sector"]==sel]
+            display = df_show.copy()
+            for col in ["1D %","1W %","1M %","3M %","6M %","1Y %","Composite"]:
+                display[col]=display[col].apply(lambda x:f"{x*100:+.2f}%" if pd.notna(x) else "—")
+            display["🔗"]=df_show["Industry"].apply(to_finviz_url)
+            st.dataframe(display[["Industry","Sector","1D %","1W %","1M %","3M %","6M %","1Y %","Composite","🔗"]],
+                         use_container_width=True, height=580,
+                         column_config={"🔗":st.column_config.LinkColumn("Finviz →",display_text="Open")})
+            st.download_button("📥 Download Excel",to_excel_bytes({"Finviz Industries":df_show}),
+                               "finviz_industries.xlsx",
+                               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        with c2:
+            period = st.selectbox("Period",["Composite","1D %","1W %","1M %","3M %","1Y %"],key="fv_p")
+            df_chart = df_show.copy()
+            top = df_chart.dropna(subset=[period]).sort_values(period,ascending=False).head(15)
+            bot = df_chart.dropna(subset=[period]).sort_values(period).head(5)
+            combined = pd.concat([bot,top]).drop_duplicates().sort_values(period,ascending=True)
+            vals = combined[period]*100 if combined[period].abs().max()<2 else combined[period]
+            colors=["#27ae60" if v>=0 else "#e74c3c" for v in vals]
+            fig=go.Figure(go.Bar(x=vals,y=combined["Industry"],orientation="h",
+                                 marker_color=colors,
+                                 text=[f"{v:+.2f}%" for v in vals],
+                                 textposition="outside",textfont=dict(size=8,color="#aab8c2")))
+            fig.update_layout(**DARK,title=dict(text=f"Top 15 + Bottom 5 — {period}",
+                                                font=dict(color="#e8f4fd",size=12)),
+                              xaxis=dict(gridcolor="#1e2d3d",ticksuffix="%"),
+                              yaxis=dict(tickfont=dict(size=8)),
+                              height=600,margin=dict(l=10,r=70,t=40,b=10),showlegend=False)
+            st.plotly_chart(fig,use_container_width=True)
 
-        instruments = BREADTH + SECTORS
-        rows = []
-        with st.spinner("Loading breadth data..."):
-            for name, ticker in instruments:
-                d = fetch_ticker(ticker)
-                if d:
-                    price  = d["price"]
-                    ema10  = d["ema10"]
-                    sma20  = d["sma20"]
-                    sma50  = d["sma50"]
-                    sma200 = d["sma200"]
-                    p_e10  = price > ema10  if ema10  else False
-                    e_s20  = ema10 > sma20  if (ema10 and sma20) else False
-                    p_s20  = price > sma20  if sma20  else False
-                    if p_e10 and e_s20 and p_s20: sig = "✅ BULLISH"
-                    elif p_e10 or p_s20:           sig = "🟡 MIXED"
-                    else:                          sig = "🔴 BEARISH"
-                    rows.append({
-                        "Name": name, "Ticker": ticker,
-                        "Price": f"${price:.2f}",
-                        "EMA10": f"${ema10:.2f}" if ema10 else "—",
-                        "SMA20": f"${sma20:.2f}" if sma20 else "—",
-                        "SMA50": f"${sma50:.2f}" if sma50 else "—",
-                        "SMA200": f"${sma200:.2f}" if sma200 else "—",
-                        "Price>EMA10": "✅" if p_e10 else "❌",
-                        "EMA10>SMA20": "✅" if e_s20 else "❌",
-                        "Signal": sig,
-                        "_bullish": p_e10 and e_s20 and p_s20,
-                    })
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 5 — STAGE 2
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_s2:
+    st.markdown('<div class="section-header">Stage 2 Stocks — Price > MA50 > MA150 > MA200</div>',
+                unsafe_allow_html=True)
 
-        if rows:
-            df_br = pd.DataFrame(rows)
-            bullish = df_br["_bullish"].sum()
-            total   = len(df_br)
-            pct     = round(bullish / total * 100)
+    # Check if we have cached results < 24h old
+    has_results = (st.session_state.stage2_results is not None and
+                   st.session_state.stage2_timestamp is not None and
+                   datetime.now() - st.session_state.stage2_timestamp < timedelta(hours=24))
 
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Bullish", f"{bullish}/{total}", f"{pct}% of instruments")
-            c2.metric("Mixed",   str((df_br["Signal"]=="🟡 MIXED").sum()))
-            c3.metric("Bearish", str((df_br["Signal"]=="🔴 BEARISH").sum()))
+    if has_results:
+        ts = st.session_state.stage2_timestamp.strftime("%d %b %Y %H:%M")
+        st.markdown(f'<div class="update-badge">Last scan: {ts}</div>',unsafe_allow_html=True)
+        st.markdown("<br>",unsafe_allow_html=True)
 
-            st.dataframe(
-                df_br.drop(columns=["_bullish"]),
-                use_container_width=True, height=500
-            )
-
-    # ── Tab 4: Finviz Industries ──────────────────────────────────────────────
-    with tab4:
-        with st.spinner("Loading Finviz industry data..."):
-            df_fv = fetch_finviz_industries()
-
-        if df_fv.empty:
-            st.warning("Could not load Finviz data. Try again in a few minutes.")
-        else:
-            st.markdown(
-                f'<div class="section-header">{len(df_fv)} Industries — Ranked by Composite (1W+1M+3M)</div>',
-                unsafe_allow_html=True
-            )
-
-            col1, col2 = st.columns([3, 2])
-
-            with col1:
-                # Sector filter
-                sectors = ["All"] + sorted(df_fv["Sector"].unique().tolist())
-                sel_sector = st.selectbox("Filter by sector", sectors, key="fv_sector")
-                df_show = df_fv if sel_sector == "All" else df_fv[df_fv["Sector"]==sel_sector]
-
-                # Format display
-                display = df_show[["Industry","Sector","1D %","1W %","1M %","3M %","6M %","1Y %","Composite"]].copy()
-                for col in ["1D %","1W %","1M %","3M %","6M %","1Y %","Composite"]:
-                    display[col] = display[col].apply(
-                        lambda x: f"{x*100:+.2f}%" if pd.notna(x) else "—"
-                    )
-
-                # Add Finviz link
-                def make_link(name):
-                    code = re.sub(r'[^a-z0-9]', '', name.lower())
-                    return f"https://finviz.com/screener.ashx?f=ind_{code}&v=211"
-
-                display["🔗"] = df_show["Industry"].apply(make_link)
-
-                st.dataframe(
-                    display,
-                    use_container_width=True,
-                    height=600,
-                    column_config={
-                        "🔗": st.column_config.LinkColumn("Finviz →", display_text="Open")
-                    }
-                )
-
-            with col2:
-                period = st.selectbox(
-                    "Period",
-                    ["Composite","1D %","1W %","1M %","3M %","1Y %"],
-                    key="fv_period"
-                )
-                df_chart = df_show.copy()
-                df_chart[period] = df_chart[period] if period == "Composite" else df_chart[period]
-
-                # Top 15 + bottom 5
-                top    = df_chart.dropna(subset=[period]).sort_values(period, ascending=False).head(15)
-                bottom = df_chart.dropna(subset=[period]).sort_values(period).head(5)
-                combined = pd.concat([bottom, top]).drop_duplicates()
-                combined = combined.sort_values(period, ascending=True)
-
-                colors = ["#27ae60" if v >= 0 else "#e74c3c" for v in combined[period]]
-                fig = go.Figure(go.Bar(
-                    x=combined[period] * 100,
-                    y=combined["Industry"],
-                    orientation="h",
-                    marker_color=colors,
-                    text=[f"{v*100:+.2f}%" for v in combined[period]],
-                    textposition="outside",
-                    textfont=dict(size=9, color="#aab8c2"),
-                ))
-                fig.update_layout(
-                    title=dict(text=f"Top 15 + Bottom 5 — {period}",
-                               font=dict(color="#e8f4fd", size=13)),
-                    paper_bgcolor="#111827",
-                    plot_bgcolor="#111827",
-                    font=dict(color="#aab8c2", family="DM Mono"),
-                    xaxis=dict(gridcolor="#1e2d3d", zerolinecolor="#2d3f50",
-                               ticksuffix="%", title=""),
-                    yaxis=dict(gridcolor="#1e2d3d", tickfont=dict(size=9)),
-                    height=620,
-                    margin=dict(l=10, r=60, t=40, b=10),
-                    showlegend=False,
-                )
-                st.plotly_chart(fig, use_container_width=True)
-
-    # Auto-refresh button
-    st.markdown("<br>", unsafe_allow_html=True)
-    col1, col2, col3 = st.columns([1,1,3])
+    col1, col2 = st.columns([3,1])
     with col1:
-        if st.button("🔄 Refresh Data"):
-            st.cache_data.clear()
-            st.rerun()
+        st.info(f"⏱️ Scans top {top_n} industries × ~30-50 stocks each. Takes **10-20 minutes**. "
+                f"Results cached for 24 hours. Best run on weekends.")
     with col2:
-        st.markdown(
-            f'<div class="update-badge">Last: {now}</div>',
-            unsafe_allow_html=True
-        )
+        run_scan = st.button("🔍 Run Stage 2 Scan", type="primary",
+                             disabled=False)
 
-if __name__ == "__main__":
-    main()
+    if run_scan:
+        if df_fv.empty:
+            st.error("Load Finviz data first — go to Industries tab")
+        else:
+            top_industries = df_fv.head(top_n)[["Industry","Sector","Composite"]].values.tolist()
+            progress = st.progress(0)
+            status   = st.empty()
+            all_results = []
+            total_checked = 0
+
+            for i, (industry, sector, score) in enumerate(top_industries):
+                status.markdown(f"**Scanning [{i+1}/{top_n}]:** {industry}...")
+                progress.progress((i+1)/top_n)
+
+                tickers = get_industry_tickers(industry, max_pages=4)
+                for ticker in tickers:
+                    total_checked += 1
+                    stock = check_stage2(ticker, min_price, min_vol)
+                    if stock:
+                        stock["Industry"] = industry
+                        stock["Sector"]   = sector
+                        stock["Ind Score"]= round(score*100, 2)
+                        all_results.append(stock)
+                    time.sleep(0.1)
+
+            progress.progress(1.0)
+            status.markdown(f"✅ **Done!** Found **{len(all_results)}** Stage 2 stocks from {total_checked} checked.")
+            st.session_state.stage2_results   = all_results
+            st.session_state.stage2_timestamp = datetime.now()
+
+    if st.session_state.stage2_results:
+        df_s2 = pd.DataFrame(st.session_state.stage2_results)
+        df_s2 = df_s2.sort_values(["Ind Score","% off 52W High"],ascending=[False,False])
+        df_s2 = df_s2.reset_index(drop=True); df_s2.index+=1; df_s2.index.name="Rank"
+
+        # Summary metrics
+        c1,c2,c3,c4 = st.columns(4)
+        c1.metric("Stage 2 Stocks",len(df_s2))
+        c2.metric("Industries",df_s2["Industry"].nunique())
+        c3.metric("Avg RS Rating",round(df_s2["RS Rating"].dropna().mean()))
+        c4.metric("Near 52W High (<10%)",int((df_s2["% off 52W High"]>-10).sum()))
+
+        # Filters
+        c1,c2,c3 = st.columns(3)
+        with c1:
+            ind_filter = st.selectbox("Industry",["All"]+sorted(df_s2["Industry"].unique().tolist()))
+        with c2:
+            rs_min = st.slider("Min RS Rating",1,99,50,key="s2_rs")
+        with c3:
+            high_filter = st.slider("Max % off 52W High",-50,0,-30,key="s2_high")
+
+        df_show = df_s2.copy()
+        if ind_filter != "All":
+            df_show = df_show[df_show["Industry"]==ind_filter]
+        df_show = df_show[df_show["RS Rating"].fillna(0)>=rs_min]
+        df_show = df_show[df_show["% off 52W High"]>=high_filter]
+
+        st.markdown(f"**Showing {len(df_show)} stocks**",unsafe_allow_html=True)
+
+        # Format for display
+        display = df_show.copy()
+        for col in ["1D %","1W %"]:
+            if col in display.columns:
+                display[col]=display[col].apply(lambda x:f"{x:+.2f}%" if pd.notna(x) else "—")
+        for col in ["% off 52W High","% from 52W Low"]:
+            if col in display.columns:
+                display[col]=display[col].apply(lambda x:f"{x:+.1f}%")
+        display["Price"]=display["Price"].apply(lambda x:f"${x:.2f}")
+        display["MA50"]=display["MA50"].apply(lambda x:f"${x:.2f}")
+        display["MA150"]=display["MA150"].apply(lambda x:f"${x:.2f}")
+        display["MA200"]=display["MA200"].apply(lambda x:f"${x:.2f}")
+        display["Avg Vol"]=display["Avg Vol"].apply(lambda x:f"{x/1e6:.1f}M" if x>=1e6 else f"{x/1e3:.0f}K")
+        display["Mkt Cap"]=display["Mkt Cap"].apply(fmt_large)
+
+        st.dataframe(display,use_container_width=True,height=550)
+
+        st.download_button("📥 Download Stage 2 Excel",
+                           to_excel_bytes({"Stage 2 Stocks":df_show,"All Results":df_s2}),
+                           "stage2_stocks.xlsx",
+                           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+        # Top industries bar chart
+        top_inds = df_s2.groupby("Industry").size().sort_values(ascending=False).head(15)
+        fig = go.Figure(go.Bar(
+            x=top_inds.values, y=top_inds.index, orientation="h",
+            marker_color="#27ae60",
+            text=top_inds.values, textposition="outside",
+        ))
+        fig.update_layout(**DARK,title=dict(text="Stage 2 Stocks by Industry",
+                                            font=dict(color="#e8f4fd",size=13)),
+                          xaxis=dict(gridcolor="#1e2d3d",title="# Stocks"),
+                          yaxis=dict(tickfont=dict(size=9)),
+                          height=400,margin=dict(l=10,r=40,t=40,b=10),showlegend=False)
+        st.plotly_chart(fig,use_container_width=True)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 6 — SECTOR ROTATION
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_rot:
+    st.markdown('<div class="section-header">Sector Rotation — 3M vs 1M Performance</div>',
+                unsafe_allow_html=True)
+
+    view = st.radio("View",["Sectors","Themes","Finviz Industries"],horizontal=True)
+    df_rot = {"Sectors":df_sec,"Themes":df_th,"Finviz Industries":df_fv}[view]
+
+    if not df_rot.empty:
+        st.plotly_chart(scatter_rotation(df_rot),use_container_width=True)
+        st.markdown("""
+        <div style='color:#6b8cad;font-size:12px;padding:8px'>
+        <b style='color:#27ae60'>▲ LEADING</b> — both 3M and 1M positive (upper right) &nbsp;|&nbsp;
+        <b style='color:#3498db'>↗ IMPROVING</b> — 3M negative but 1M turning positive (upper left) &nbsp;|&nbsp;
+        <b style='color:#e67e22'>↘ FADING</b> — 3M positive but 1M turning negative (lower right) &nbsp;|&nbsp;
+        <b style='color:#e74c3c'>▼ LAGGING</b> — both negative (lower left)
+        </div>""",unsafe_allow_html=True)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 7 — 52W HEATMAP
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_hw:
+    st.markdown('<div class="section-header">52-Week High/Low Heatmap</div>',unsafe_allow_html=True)
+
+    view2 = st.radio("View",["Sectors","Themes"],horizontal=True,key="hw_view")
+    df_hw = {"Sectors":df_sec,"Themes":df_th}[view2]
+
+    if not df_hw.empty:
+        st.plotly_chart(heatmap_52w(df_hw),use_container_width=True)
+
+        # Also show table
+        display = df_hw.copy()
+        display = display[["Name","Ticker","Price","% off High","1D %","1M %","RS Rating"]].copy()
+        display["Price"] = display["Price"].apply(lambda x:f"${x:.2f}")
+        display["% off High"]=display["% off High"].apply(lambda x:f"{x:+.1f}%")
+        for col in ["1D %","1M %"]:
+            display[col]=display[col].apply(lambda x:f"{x:+.2f}%" if pd.notna(x) else "—")
+        display = display.sort_values("% off High",ascending=False)
+        st.dataframe(display,use_container_width=True,height=350)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 8 — HISTORY
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_hist:
+    st.markdown('<div class="section-header">Historical Snapshots — Compare Rankings Over Time</div>',
+                unsafe_allow_html=True)
+
+    # Save current snapshot
+    if st.button("💾 Save Today's Snapshot"):
+        today = datetime.now().strftime("%Y-%m-%d %H:%M")
+        if not df_th.empty:
+            snap = df_th[["Name","1D %","1W %","1M %","3M %","Composite"]].copy()
+            snap.columns = [c if c=="Name" else f"{c} ({today})" for c in snap.columns]
+            st.session_state.history[today] = df_th[["Name","Composite"]].set_index("Name")["Composite"].to_dict()
+            st.success(f"Snapshot saved for {today}")
+
+    if len(st.session_state.history) >= 2:
+        dates = sorted(st.session_state.history.keys())
+        c1,c2 = st.columns(2)
+        with c1: d1 = st.selectbox("Compare from", dates, index=0)
+        with c2: d2 = st.selectbox("Compare to",   dates, index=len(dates)-1)
+
+        s1 = st.session_state.history[d1]
+        s2 = st.session_state.history[d2]
+        common = set(s1.keys()) & set(s2.keys())
+        changes = []
+        for name in common:
+            diff = (s2[name] - s1[name]) * 100
+            changes.append({"Theme":name,
+                            f"Score {d1[:10]}":f"{s1[name]*100:+.1f}%",
+                            f"Score {d2[:10]}":f"{s2[name]*100:+.1f}%",
+                            "Change":f"{diff:+.1f}%",
+                            "_diff":diff})
+        if changes:
+            df_chg = pd.DataFrame(changes).sort_values("_diff",ascending=False)
+            st.dataframe(df_chg.drop(columns=["_diff"]),use_container_width=True,height=500)
+            st.download_button("📥 Download Comparison",
+                               to_excel_bytes({"Comparison":df_chg.drop(columns=["_diff"])}),
+                               "history_comparison.xlsx",
+                               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    else:
+        st.info("Save at least 2 snapshots to compare rankings over time. "
+                "Come back tomorrow and save another to see what changed!")
+        if st.session_state.history:
+            st.markdown(f"**Saved snapshots:** {', '.join(st.session_state.history.keys())}")
