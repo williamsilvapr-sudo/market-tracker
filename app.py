@@ -117,6 +117,8 @@ if "stage2_results" not in st.session_state:
     st.session_state.stage2_results = None
 if "stage2_timestamp" not in st.session_state:
     st.session_state.stage2_timestamp = None
+if "setup_scan_results" not in st.session_state:
+    st.session_state.setup_scan_results = None
 
 # ── Helper functions ──────────────────────────────────────────────────────────
 def safe_pct(new, old):
@@ -569,6 +571,180 @@ def check_alerts(df_themes, df_sectors, df_fv):
 
     return alerts[:12]  # cap at 12
 
+
+# ── SETUP SCANNER HELPER FUNCTIONS ────────────────────────────────────────────
+
+def check_setup_scans(ticker, vol_thresh=1.5, pivot_thresh=0.8, lookback=20):
+    """
+    Run three scans on a ticker:
+    Scan 1 — Low Volatility:  last 2 days both have (High-Low)/Close < vol_thresh%
+    Scan 2 — Pivot Area:      last 2 days highs within pivot_thresh% of each other
+    Scan 3 — Inside Day:      last day High < prev day High AND last day Low > prev day Low
+    Returns dict with scan results + OHLCV for charting, or None if no scan passes.
+    """
+    try:
+        tk = yf.Ticker(ticker)
+        hist = tk.history(period="3mo", interval="1d")
+        if hist.empty or len(hist) < 5:
+            return None
+
+        hist = hist.tail(lookback)
+        opens  = list(hist["Open"])
+        highs  = list(hist["High"])
+        lows   = list(hist["Low"])
+        closes = list(hist["Close"])
+        dates  = list(hist.index)
+        vols   = list(hist["Volume"])
+
+        if len(closes) < 3:
+            return None
+
+        # Use last 2 completed days
+        d1_o, d1_h, d1_l, d1_c = opens[-2], highs[-2], lows[-2], closes[-2]
+        d2_o, d2_h, d2_l, d2_c = opens[-1], highs[-1], lows[-1], closes[-1]
+
+        # Scan 1: daily range (High-Low)/Close < vol_thresh% for BOTH days
+        range_d1 = (d1_h - d1_l) / d1_c * 100
+        range_d2 = (d2_h - d2_l) / d2_c * 100
+        scan1 = range_d1 < vol_thresh and range_d2 < vol_thresh
+
+        # Scan 2: two last day highs within pivot_thresh% of each other
+        high_diff = abs(d1_h - d2_h) / max(d1_h, d2_h) * 100
+        scan2 = high_diff < pivot_thresh
+
+        # Scan 3: inside day — last day's range is entirely within previous day's range
+        scan3 = (d2_h < d1_h) and (d2_l > d1_l)
+
+        # Only return if at least one scan passes
+        if not (scan1 or scan2 or scan3):
+            return None
+
+        return {
+            "ticker":    ticker,
+            "scan1":     scan1,
+            "scan2":     scan2,
+            "scan3":     scan3,
+            "range_d1":  round(range_d1, 2),
+            "range_d2":  round(range_d2, 2),
+            "high_diff": round(high_diff, 2),
+            "inside_margin": round((d1_h - d2_h) / d1_h * 100, 2),
+            "price":     round(closes[-1], 2),
+            "pivot_high": round(max(d1_h, d2_h), 2),
+            "prev_high":  round(d1_h, 2),
+            "prev_low":   round(d1_l, 2),
+            # OHLCV for mini chart
+            "dates":  dates,
+            "opens":  opens,
+            "highs":  highs,
+            "lows":   lows,
+            "closes": closes,
+            "vols":   vols,
+        }
+    except Exception:
+        return None
+
+
+def mini_candle_chart(result, industry="", rs=None, vol_thresh=1.5, pivot_thresh=0.8):
+    """Compact 20-day candlestick chart with volume bars and scan annotations."""
+    dates  = result["dates"]
+    opens  = result["opens"]
+    highs  = result["highs"]
+    lows   = result["lows"]
+    closes = result["closes"]
+    vols   = result["vols"]
+    ticker = result["ticker"]
+    pivot  = result["pivot_high"]
+
+    colors = ["rgba(39,174,96,0.85)" if c >= o else "rgba(231,76,60,0.85)"
+              for c, o in zip(closes, opens)]
+    vol_colors = ["rgba(39,174,96,0.35)" if c >= o else "rgba(231,76,60,0.35)"
+                  for c, o in zip(closes, opens)]
+
+    fig = go.Figure()
+
+    # Volume bars (background layer)
+    fig.add_trace(go.Bar(
+        x=dates, y=vols,
+        marker_color=vol_colors,
+        name="Volume", yaxis="y2", showlegend=False,
+    ))
+
+    # Candlestick
+    fig.add_trace(go.Candlestick(
+        x=dates, open=opens, high=highs, low=lows, close=closes,
+        name="Price",
+        increasing=dict(line=dict(color="#27ae60", width=1.5),
+                        fillcolor="rgba(39,174,96,0.8)"),
+        decreasing=dict(line=dict(color="#e74c3c", width=1.5),
+                        fillcolor="rgba(231,76,60,0.8)"),
+    ))
+
+    # Pivot high dashed line
+    fig.add_shape(type="line",
+                  x0=dates[max(0, len(dates)-5)], x1=dates[-1],
+                  y0=pivot, y1=pivot,
+                  line=dict(color="#f39c12", width=1.5, dash="dash"))
+    fig.add_annotation(
+        x=dates[-1], y=pivot,
+        text=f" ${pivot:.2f}",
+        showarrow=False,
+        font=dict(color="#f39c12", size=9),
+        xanchor="left",
+    )
+
+    # Inside day box — highlight range of previous day
+    if result.get("scan3") and len(dates) >= 2:
+        fig.add_shape(type="rect",
+                      x0=dates[-2], x1=dates[-1],
+                      y0=result["prev_low"], y1=result["prev_high"],
+                      fillcolor="rgba(52,152,219,0.08)",
+                      line=dict(color="rgba(52,152,219,0.4)", width=1, dash="dot"))
+
+    # Highlight last 2 bars
+    if len(dates) >= 2:
+        fig.add_vrect(
+            x0=dates[-2], x1=dates[-1],
+            fillcolor="rgba(255,255,255,0.03)",
+            line=dict(color="rgba(255,255,255,0.15)", width=1),
+        )
+
+    # Build title with scan badges
+    badges = []
+    if result["scan1"]: badges.append(f"<span style='color:#3498db'>●LowVol</span>")
+    if result["scan2"]: badges.append(f"<span style='color:#f39c12'>●Pivot</span>")
+    if result["scan3"]: badges.append(f"<span style='color:#9b59b6'>●Inside</span>")
+    badge_str = "  ".join(badges)
+
+    rs_str  = f"  RS:{rs}" if rs else ""
+    ind_str = f"<br><span style='color:#4a6080;font-size:9px'>{industry}</span>" if industry else ""
+    title   = f"<b style='color:#e8f4fd'>{ticker}</b>  <span style='color:#aab8c2'>${result['price']:.2f}</span>  {badge_str}{rs_str}{ind_str}"
+
+    fig.update_layout(
+        paper_bgcolor="#111827",
+        plot_bgcolor="#0a0f1a",
+        font=dict(color="#aab8c2", family="DM Mono", size=8),
+        title=dict(text=title, font=dict(color="#e8f4fd", size=11), x=0, y=0.98),
+        xaxis=dict(
+            gridcolor="#151e2d", showgrid=False,
+            rangeslider=dict(visible=False),
+            tickformat="%d %b", tickfont=dict(size=7),
+            showticklabels=True,
+        ),
+        yaxis=dict(
+            gridcolor="#151e2d", tickprefix="$", side="right",
+            tickfont=dict(size=8), showgrid=True,
+        ),
+        yaxis2=dict(
+            domain=[0, 0.18], showticklabels=False, showgrid=False,
+            overlaying=None,
+        ),
+        height=290,
+        margin=dict(l=4, r=55, t=45, b=20),
+        showlegend=False,
+    )
+    return fig
+
+
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("### 📋 Watchlist")
@@ -650,11 +826,12 @@ tabs = st.tabs([
     "🧭 Breadth",
     "🏭 Industries",
     "📈 Stage 2",
+    "🎯 Setup Scanner",
     "🔄 Rotation",
     "📉 52W Map",
     "📅 History",
 ])
-tab_sec, tab_th, tab_br, tab_fv, tab_s2, tab_rot, tab_hw, tab_hist = tabs
+tab_sec, tab_th, tab_br, tab_fv, tab_s2, tab_scan, tab_rot, tab_hw, tab_hist = tabs
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 1 — SECTORS
@@ -941,7 +1118,212 @@ with tab_s2:
         st.plotly_chart(fig,use_container_width=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TAB 6 — SECTOR ROTATION
+# TAB 6 — SETUP SCANNER
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_scan:
+    st.markdown(
+        '<div class="section-header">🎯 Setup Scanner — Low Volatility · Pivot · Inside Day</div>',
+        unsafe_allow_html=True
+    )
+
+    # Scan descriptions
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.markdown("""
+        <div style='background:#0d1520;border:1px solid #1e3a6e;border-radius:8px;padding:12px;font-size:12px'>
+        <b style='color:#3498db'>📘 Scan 1 — Low Volatility</b><br><br>
+        Both last 2 days have daily range<br>
+        (High − Low) / Close &lt; threshold<br><br>
+        <span style='color:#6b8cad'>Stock is coiling — energy building</span>
+        </div>""", unsafe_allow_html=True)
+    with c2:
+        st.markdown("""
+        <div style='background:#0d1520;border:1px solid #6e5a1e;border-radius:8px;padding:12px;font-size:12px'>
+        <b style='color:#f39c12'>📘 Scan 2 — Pivot Area</b><br><br>
+        Last 2 days highs within<br>
+        threshold % of each other<br><br>
+        <span style='color:#6b8cad'>Clear resistance level being tested</span>
+        </div>""", unsafe_allow_html=True)
+    with c3:
+        st.markdown("""
+        <div style='background:#0d1520;border:1px solid #5a1e6e;border-radius:8px;padding:12px;font-size:12px'>
+        <b style='color:#9b59b6'>📘 Scan 3 — Inside Day</b><br><br>
+        Last day High &lt; prev High<br>
+        AND last day Low &gt; prev Low<br><br>
+        <span style='color:#6b8cad'>Full range contained — compression</span>
+        </div>""", unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    if st.session_state.stage2_results is None:
+        st.warning("⚠️ Run the **Stage 2 Scan** first (📈 Stage 2 tab) — Setup Scanner filters those results.")
+    else:
+        df_s2_base = pd.DataFrame(st.session_state.stage2_results)
+        n_stocks = len(df_s2_base)
+
+        # Settings
+        cs1, cs2, cs3, cs4 = st.columns(4)
+        with cs1: vol_thresh   = st.slider("Scan 1: Max daily range %", 0.5, 3.0, 1.5, 0.1, key="sc_vol")
+        with cs2: pivot_thresh = st.slider("Scan 2: Max high diff %",   0.1, 2.0, 0.8, 0.1, key="sc_piv")
+        with cs3: charts_per_row = st.selectbox("Charts per row", [2, 3, 4], index=1, key="sc_cols")
+        with cs4: st.markdown(f"<br><span style='color:#6b8cad;font-size:12px'>{n_stocks} Stage 2 stocks to scan</span>", unsafe_allow_html=True)
+
+        if st.button("🔍 Run Setup Scans", type="primary", key="run_setup"):
+            tickers = df_s2_base["Ticker"].tolist()
+            progress = st.progress(0)
+            status   = st.empty()
+            scan_results = []
+
+            for i, ticker in enumerate(tickers):
+                progress.progress((i + 1) / len(tickers))
+                status.markdown(f"Scanning **{ticker}** ({i+1}/{len(tickers)})...")
+                r = check_setup_scans(ticker, vol_thresh, pivot_thresh)
+                if r:
+                    s2_row = df_s2_base[df_s2_base["Ticker"] == ticker]
+                    if not s2_row.empty:
+                        r["Company"]  = s2_row.iloc[0].get("Company", ticker)
+                        r["Industry"] = s2_row.iloc[0].get("Industry", "")
+                        r["Sector"]   = s2_row.iloc[0].get("Sector", "")
+                        r["RS Rating"]= s2_row.iloc[0].get("RS Rating", None)
+                        r["MA50"]     = s2_row.iloc[0].get("MA50", None)
+                        r["Ind Score"]= s2_row.iloc[0].get("Ind Score", 0)
+                    scan_results.append(r)
+                time.sleep(0.08)
+
+            progress.progress(1.0)
+            status.empty()
+            st.session_state.setup_scan_results = scan_results
+            total = len(scan_results)
+            both  = sum(1 for r in scan_results if r["scan1"] and r["scan2"])
+            s3    = sum(1 for r in scan_results if r["scan3"])
+            st.success(f"✅ Found **{total}** setups — {both} pass both S1+S2, {s3} inside days")
+
+        # ── Display results ───────────────────────────────────────────────────
+        if st.session_state.setup_scan_results:
+            results = st.session_state.setup_scan_results
+
+            # Categorise
+            both_12  = [r for r in results if r["scan1"] and r["scan2"]]
+            all_3    = [r for r in results if r["scan1"] and r["scan2"] and r["scan3"]]
+            only1    = [r for r in results if r["scan1"] and not r["scan2"] and not r["scan3"]]
+            only2    = [r for r in results if r["scan2"] and not r["scan1"] and not r["scan3"]]
+            only3    = [r for r in results if r["scan3"] and not r["scan1"] and not r["scan2"]]
+            s1_or_s3 = [r for r in results if (r["scan1"] or r["scan3"]) and not r["scan2"]]
+
+            # Summary metrics
+            c1, c2, c3, c4, c5 = st.columns(5)
+            c1.metric("🏆 All 3 Scans",   len(all_3),   "Strongest setups")
+            c2.metric("⭐ S1 + S2",       len(both_12), "Low vol + Pivot")
+            c3.metric("🔵 Low Vol (S1)",   len([r for r in results if r["scan1"]]))
+            c4.metric("🟡 Pivot (S2)",     len([r for r in results if r["scan2"]]))
+            c5.metric("🟣 Inside Day (S3)",len([r for r in results if r["scan3"]]))
+
+            # Download button
+            rows_dl = []
+            for r in results:
+                rows_dl.append({
+                    "Ticker":r["ticker"], "Company":r.get("Company",""),
+                    "Industry":r.get("Industry",""), "Sector":r.get("Sector",""),
+                    "Price":r["price"], "Pivot High":r["pivot_high"],
+                    "RS Rating":r.get("RS Rating",""), "MA50":r.get("MA50",""),
+                    "Day1 Range %":r["range_d1"], "Day2 Range %":r["range_d2"],
+                    "High Diff %":r["high_diff"],
+                    "Inside Margin %":r.get("inside_margin",""),
+                    "Scan1 LowVol": "✅" if r["scan1"] else "❌",
+                    "Scan2 Pivot":  "✅" if r["scan2"] else "❌",
+                    "Scan3 Inside": "✅" if r["scan3"] else "❌",
+                })
+            df_dl = pd.DataFrame(rows_dl)
+            st.download_button("📥 Download All Setups (Excel)",
+                to_excel_bytes({
+                    "All 3 Scans":   df_dl[df_dl["Scan1 LowVol"]=="✅"][df_dl["Scan2 Pivot"]=="✅"][df_dl["Scan3 Inside"]=="✅"] if len(all_3) else pd.DataFrame(),
+                    "S1+S2 (AND)":   df_dl[(df_dl["Scan1 LowVol"]=="✅") & (df_dl["Scan2 Pivot"]=="✅")],
+                    "Low Vol (S1)":  df_dl[df_dl["Scan1 LowVol"]=="✅"],
+                    "Pivot (S2)":    df_dl[df_dl["Scan2 Pivot"]=="✅"],
+                    "Inside Day (S3)":df_dl[df_dl["Scan3 Inside"]=="✅"],
+                    "All Results":   df_dl,
+                }),
+                "setup_scans.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="dl_setups"
+            )
+
+            st.markdown("---")
+
+            def show_group(group, title, border_color, description):
+                if not group:
+                    return
+                # Sort by RS Rating desc, then by % off high
+                group_sorted = sorted(group,
+                    key=lambda x: (-(x.get("RS Rating") or 0),
+                                    (x.get("high_diff") or 99)))
+
+                st.markdown(
+                    f"<div style='background:#0a0e1a;border-left:4px solid {border_color};"
+                    f"padding:10px 16px;margin:16px 0 8px 0;border-radius:0 6px 6px 0'>"
+                    f"<span style='color:{border_color};font-weight:700;font-size:14px'>{title}</span>"
+                    f"<span style='color:#6b8cad;font-size:12px;margin-left:12px'>{description}</span>"
+                    f"<span style='background:{border_color}22;color:{border_color};"
+                    f"font-family:DM Mono;font-size:12px;padding:2px 8px;border-radius:4px;float:right'>"
+                    f"{len(group)} stocks</span></div>",
+                    unsafe_allow_html=True
+                )
+
+                cols = st.columns(charts_per_row)
+                for i, r in enumerate(group_sorted):
+                    with cols[i % charts_per_row]:
+                        rs  = r.get("RS Rating")
+                        ind = r.get("Industry", "")
+                        fig = mini_candle_chart(r, industry=ind, rs=rs,
+                                               vol_thresh=vol_thresh,
+                                               pivot_thresh=pivot_thresh)
+                        st.plotly_chart(fig, use_container_width=True)
+
+                        # Info strip under chart
+                        tv_url = f"https://www.tradingview.com/chart/?symbol={r['ticker']}"
+                        s1_txt = f"<span style='color:#3498db'>S1:{r['range_d1']:.1f}/{r['range_d2']:.1f}%</span>" if r["scan1"] else ""
+                        s2_txt = f"<span style='color:#f39c12'>S2:Δ{r['high_diff']:.2f}%</span>" if r["scan2"] else ""
+                        s3_txt = f"<span style='color:#9b59b6'>S3:inside</span>" if r["scan3"] else ""
+                        ma50   = r.get("MA50")
+                        ma_txt = f"<span style='color:#6b8cad'>MA50:${ma50:.2f}</span>" if ma50 else ""
+                        st.markdown(
+                            f"<div style='font-family:DM Mono;font-size:10px;padding:2px 0 8px 0;"
+                            f"display:flex;gap:8px;flex-wrap:wrap;align-items:center'>"
+                            f"{s1_txt} {s2_txt} {s3_txt} {ma_txt}"
+                            f"<a href='{tv_url}' target='_blank' style='color:#1a73e8;"
+                            f"text-decoration:none;margin-left:auto'>📈 TV</a>"
+                            f"</div>",
+                            unsafe_allow_html=True
+                        )
+
+            # ── Show groups ────────────────────────────────────────────────
+            show_group(all_3,
+                "🏆 All Three Scans — Low Vol + Pivot + Inside Day",
+                "#27ae60",
+                "Highest priority — all compression signals confirmed")
+
+            show_group(both_12,
+                "⭐ Scan 1 + Scan 2 — Low Volatility AND Pivot",
+                "#3498db",
+                "Strong setup — coiling at resistance")
+
+            show_group(only3,
+                "🟣 Scan 3 Only — Inside Day",
+                "#9b59b6",
+                "Full range contained within prior day")
+
+            show_group(only1,
+                "🔵 Scan 1 Only — Low Volatility Contraction",
+                "#1a73e8",
+                "Tight price action over 2 days")
+
+            show_group(only2,
+                "🟡 Scan 2 Only — Pivot / Resistance Area",
+                "#f39c12",
+                "Two consecutive highs at same level")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 7 — SECTOR ROTATION
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_rot:
     st.markdown('<div class="section-header">Sector Rotation — 3M vs 1M Performance</div>',
