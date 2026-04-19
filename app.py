@@ -343,8 +343,10 @@ def build_etf_df(pairs):
         df.index += 1; df.index.name = "Rank"
     return df
 
-def get_industry_tickers(industry_name, max_pages=5):
-    """Get stock tickers for an industry from Finviz screener."""
+def get_industry_tickers(industry_name, max_pages=20):
+    """Get stock tickers for an industry from Finviz screener.
+    Mirrors Excel stage2_weekend.py exactly — up to 20 pages (400 stocks/industry).
+    Uses href quote.ashx?t= filter to get ONLY real ticker links."""
     code = re.sub(r'[^a-z0-9]','',industry_name.lower())
     tickers = []
     for page in range(1, max_pages+1):
@@ -352,6 +354,8 @@ def get_industry_tickers(industry_name, max_pages=5):
         url = f"https://finviz.com/screener.ashx?v=111&f=ind_{code}&r={start}&o=ticker"
         try:
             resp = requests.get(url, headers=HEADERS, timeout=15)
+            if resp.status_code != 200:
+                break
             page_tickers = []
             soup = BeautifulSoup(resp.content, "html.parser")
             for a in soup.find_all("a", href=re.compile(r'quote\.ashx\?t=')):
@@ -367,40 +371,68 @@ def get_industry_tickers(industry_name, max_pages=5):
     return list(dict.fromkeys(tickers))
 
 def check_stage2(ticker, min_price=8.0, min_vol=100000):
-    """Check Stage 2: Price > MA50 > MA150 > MA200, min price & volume."""
+    """
+    Check Stage 2 criteria — mirrors stage2_weekend.py (Excel) exactly:
+      - Price >= min_price
+      - 50-day avg volume >= min_vol
+      - Price > MA50 > MA150 > MA200
+    Uses period=1y, requires >= 200 days of data.
+    """
     try:
         tk = yf.Ticker(ticker)
         hist = tk.history(period="1y", interval="1d")
-        if hist.empty or len(hist) < 200: return None
-        prices = [float(x) for x in hist["Close"]]
-        vols   = [float(x) for x in hist["Volume"]]
-        price  = prices[-1]
-        avg_vol = sum(vols[-50:])/50
-        if price < min_price or avg_vol < min_vol: return None
-        ma50  = sum(prices[-50:])/50
-        ma150 = sum(prices[-150:])/150
-        ma200 = sum(prices[-200:])/200
-        if not (price > ma50 > ma150 > ma200): return None
+        if hist.empty or len(hist) < 200:
+            return None
+
+        prices  = [float(x) for x in hist["Close"]]
+        volumes = [float(x) for x in hist["Volume"]]
+        price   = prices[-1]
+        avg_vol = sum(volumes[-50:]) / 50  # 50-day avg volume — same as Excel
+
+        if price < min_price:   return None
+        if avg_vol < min_vol:   return None
+
+        # Moving averages — identical calculation to Excel
+        ma50  = sum(prices[-50:])  / 50
+        ma150 = sum(prices[-150:]) / 150
+        ma200 = sum(prices[-200:]) / 200
+
+        if not (price > ma50 > ma150 > ma200):
+            return None
+
+        # Returns — same formula as Excel
+        high_52w = max(prices)
+        low_52w  = min(prices)
+        ret_1d = ((price / prices[-2]) - 1) * 100 if len(prices) >= 2 else None
+        ret_1w = ((price / prices[-6]) - 1) * 100 if len(prices) >= 6 else None
+        ret_1y = safe_pct(price, prices[0])
+
         spy_ret = fetch_spy_ret()
-        ret_1y  = safe_pct(price, prices[0])
         rs = rs_rating(ret_1y, spy_ret)
+
+        # Company info — use "name" attribute same as Excel fast_info.name
         try:
             info    = tk.fast_info
-            company = getattr(info,"company_name",ticker) or ticker
-            mktcap  = getattr(info,"market_cap",0) or 0
+            company = getattr(info, "name", ticker) or ticker
+            mktcap  = getattr(info, "market_cap", 0) or 0
         except Exception:
-            company = ticker; mktcap = 0
+            company = ticker
+            mktcap  = 0
+
         return {
-            "Ticker":ticker,"Company":company,
-            "Price":round(price,2),
-            "MA50":round(ma50,2),"MA150":round(ma150,2),"MA200":round(ma200,2),
-            "1D %":safe_pct(price,prices[-2]) if len(prices)>=2 else None,
-            "1W %":safe_pct(price,prices[-6]) if len(prices)>=6 else None,
-            "% off 52W High":round((price-max(prices))/max(prices)*100,1),
-            "% from 52W Low":round((price-min(prices))/min(prices)*100,1),
-            "RS Rating":rs,
-            "Avg Vol":int(avg_vol),
-            "Mkt Cap":mktcap,
+            "Ticker":  ticker,
+            "Company": company,
+            "Price":   round(price, 2),
+            "MA50":    round(ma50, 2),
+            "MA150":   round(ma150, 2),
+            "MA200":   round(ma200, 2),
+            "1D %":    round(ret_1d, 2) if ret_1d is not None else None,
+            "1W %":    round(ret_1w, 2) if ret_1w is not None else None,
+            "% off 52W High": round((price - high_52w) / high_52w * 100, 1),
+            "% from 52W Low": round((price - low_52w)  / low_52w  * 100, 1),
+            "RS Rating": rs,
+            "Avg Vol":   int(avg_vol),
+            "Mkt Cap":   mktcap,
         }
     except Exception:
         return None
@@ -1202,125 +1234,161 @@ with tab_scan:
         if st.session_state.setup_scan_results:
             results = st.session_state.setup_scan_results
 
-            # Categorise
-            both_12  = [r for r in results if r["scan1"] and r["scan2"]]
-            all_3    = [r for r in results if r["scan1"] and r["scan2"] and r["scan3"]]
-            only1    = [r for r in results if r["scan1"] and not r["scan2"] and not r["scan3"]]
-            only2    = [r for r in results if r["scan2"] and not r["scan1"] and not r["scan3"]]
-            only3    = [r for r in results if r["scan3"] and not r["scan1"] and not r["scan2"]]
-            s1_or_s3 = [r for r in results if (r["scan1"] or r["scan3"]) and not r["scan2"]]
+            # ── Summary metrics ───────────────────────────────────────────
+            n_s1 = sum(1 for r in results if r["scan1"])
+            n_s2 = sum(1 for r in results if r["scan2"])
+            n_s3 = sum(1 for r in results if r["scan3"])
+            n_12 = sum(1 for r in results if r["scan1"] and r["scan2"])
+            n_13 = sum(1 for r in results if r["scan1"] and r["scan3"])
+            n_23 = sum(1 for r in results if r["scan2"] and r["scan3"])
+            n_all= sum(1 for r in results if r["scan1"] and r["scan2"] and r["scan3"])
 
-            # Summary metrics
-            c1, c2, c3, c4, c5 = st.columns(5)
-            c1.metric("🏆 All 3 Scans",   len(all_3),   "Strongest setups")
-            c2.metric("⭐ S1 + S2",       len(both_12), "Low vol + Pivot")
-            c3.metric("🔵 Low Vol (S1)",   len([r for r in results if r["scan1"]]))
-            c4.metric("🟡 Pivot (S2)",     len([r for r in results if r["scan2"]]))
-            c5.metric("🟣 Inside Day (S3)",len([r for r in results if r["scan3"]]))
-
-            # Download button
-            rows_dl = []
-            for r in results:
-                rows_dl.append({
-                    "Ticker":r["ticker"], "Company":r.get("Company",""),
-                    "Industry":r.get("Industry",""), "Sector":r.get("Sector",""),
-                    "Price":r["price"], "Pivot High":r["pivot_high"],
-                    "RS Rating":r.get("RS Rating",""), "MA50":r.get("MA50",""),
-                    "Day1 Range %":r["range_d1"], "Day2 Range %":r["range_d2"],
-                    "High Diff %":r["high_diff"],
-                    "Inside Margin %":r.get("inside_margin",""),
-                    "Scan1 LowVol": "✅" if r["scan1"] else "❌",
-                    "Scan2 Pivot":  "✅" if r["scan2"] else "❌",
-                    "Scan3 Inside": "✅" if r["scan3"] else "❌",
-                })
-            df_dl = pd.DataFrame(rows_dl)
-            st.download_button("📥 Download All Setups (Excel)",
-                to_excel_bytes({
-                    "All 3 Scans":   df_dl[df_dl["Scan1 LowVol"]=="✅"][df_dl["Scan2 Pivot"]=="✅"][df_dl["Scan3 Inside"]=="✅"] if len(all_3) else pd.DataFrame(),
-                    "S1+S2 (AND)":   df_dl[(df_dl["Scan1 LowVol"]=="✅") & (df_dl["Scan2 Pivot"]=="✅")],
-                    "Low Vol (S1)":  df_dl[df_dl["Scan1 LowVol"]=="✅"],
-                    "Pivot (S2)":    df_dl[df_dl["Scan2 Pivot"]=="✅"],
-                    "Inside Day (S3)":df_dl[df_dl["Scan3 Inside"]=="✅"],
-                    "All Results":   df_dl,
-                }),
-                "setup_scans.xlsx",
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="dl_setups"
-            )
+            c1,c2,c3,c4,c5,c6,c7 = st.columns(7)
+            c1.metric("🔵 S1",      n_s1,  "Low Vol")
+            c2.metric("🟡 S2",      n_s2,  "Pivot")
+            c3.metric("🟣 S3",      n_s3,  "Inside")
+            c4.metric("S1+S2",      n_12)
+            c5.metric("S1+S3",      n_13)
+            c6.metric("S2+S3",      n_23)
+            c7.metric("🏆 All 3",   n_all, "Best")
 
             st.markdown("---")
 
-            def show_group(group, title, border_color, description):
-                if not group:
-                    return
-                # Sort by RS Rating desc, then by % off high
-                group_sorted = sorted(group,
-                    key=lambda x: (-(x.get("RS Rating") or 0),
-                                    (x.get("high_diff") or 99)))
+            # ── Scan filter UI ────────────────────────────────────────────
+            st.markdown(
+                "<div style='color:#e8f4fd;font-weight:600;font-size:13px;"
+                "margin-bottom:10px'>🎛️ Filter — choose which scans to include:</div>",
+                unsafe_allow_html=True
+            )
 
+            fc1, fc2, fc3, fc4, fc5 = st.columns([2,2,2,2,3])
+            with fc1:
+                use_s1 = st.checkbox("🔵 Scan 1 — Low Vol",   value=True,  key="f_s1")
+            with fc2:
+                use_s2 = st.checkbox("🟡 Scan 2 — Pivot",     value=True,  key="f_s2")
+            with fc3:
+                use_s3 = st.checkbox("🟣 Scan 3 — Inside Day", value=True, key="f_s3")
+            with fc4:
+                logic = st.radio("Logic", ["OR — any selected", "AND — all selected"],
+                                 key="f_logic", horizontal=False)
+            with fc5:
                 st.markdown(
-                    f"<div style='background:#0a0e1a;border-left:4px solid {border_color};"
-                    f"padding:10px 16px;margin:16px 0 8px 0;border-radius:0 6px 6px 0'>"
-                    f"<span style='color:{border_color};font-weight:700;font-size:14px'>{title}</span>"
-                    f"<span style='color:#6b8cad;font-size:12px;margin-left:12px'>{description}</span>"
-                    f"<span style='background:{border_color}22;color:{border_color};"
-                    f"font-family:DM Mono;font-size:12px;padding:2px 8px;border-radius:4px;float:right'>"
-                    f"{len(group)} stocks</span></div>",
+                    "<div style='background:#0d1520;border:1px solid #1e3a5f;"
+                    "border-radius:6px;padding:8px 12px;font-size:11px;color:#6b8cad'>"
+                    "<b>OR</b> = show stocks passing <i>at least one</i> selected scan<br>"
+                    "<b>AND</b> = show stocks passing <i>all</i> selected scans"
+                    "</div>",
                     unsafe_allow_html=True
                 )
 
-                cols = st.columns(charts_per_row)
-                for i, r in enumerate(group_sorted):
-                    with cols[i % charts_per_row]:
-                        rs  = r.get("RS Rating")
-                        ind = r.get("Industry", "")
-                        fig = mini_candle_chart(r, industry=ind, rs=rs,
-                                               vol_thresh=vol_thresh,
-                                               pivot_thresh=pivot_thresh)
-                        st.plotly_chart(fig, use_container_width=True)
+            use_and = "AND" in logic
+            selected = []
+            if use_s1: selected.append("scan1")
+            if use_s2: selected.append("scan2")
+            if use_s3: selected.append("scan3")
 
-                        # Info strip under chart
-                        tv_url = f"https://www.tradingview.com/chart/?symbol={r['ticker']}"
-                        s1_txt = f"<span style='color:#3498db'>S1:{r['range_d1']:.1f}/{r['range_d2']:.1f}%</span>" if r["scan1"] else ""
-                        s2_txt = f"<span style='color:#f39c12'>S2:Δ{r['high_diff']:.2f}%</span>" if r["scan2"] else ""
-                        s3_txt = f"<span style='color:#9b59b6'>S3:inside</span>" if r["scan3"] else ""
-                        ma50   = r.get("MA50")
-                        ma_txt = f"<span style='color:#6b8cad'>MA50:${ma50:.2f}</span>" if ma50 else ""
-                        st.markdown(
-                            f"<div style='font-family:DM Mono;font-size:10px;padding:2px 0 8px 0;"
-                            f"display:flex;gap:8px;flex-wrap:wrap;align-items:center'>"
-                            f"{s1_txt} {s2_txt} {s3_txt} {ma_txt}"
-                            f"<a href='{tv_url}' target='_blank' style='color:#1a73e8;"
-                            f"text-decoration:none;margin-left:auto'>📈 TV</a>"
-                            f"</div>",
-                            unsafe_allow_html=True
-                        )
+            if not selected:
+                st.warning("Select at least one scan above.")
+            else:
+                # Filter results based on selected scans and logic
+                if use_and:
+                    # AND: stock must pass ALL selected scans
+                    filtered = [r for r in results if all(r.get(s) for s in selected)]
+                    filter_desc = " AND ".join([
+                        "Low Vol" if s=="scan1" else "Pivot" if s=="scan2" else "Inside Day"
+                        for s in selected
+                    ])
+                else:
+                    # OR: stock must pass AT LEAST ONE selected scan
+                    filtered = [r for r in results if any(r.get(s) for s in selected)]
+                    filter_desc = " OR ".join([
+                        "Low Vol" if s=="scan1" else "Pivot" if s=="scan2" else "Inside Day"
+                        for s in selected
+                    ])
 
-            # ── Show groups ────────────────────────────────────────────────
-            show_group(all_3,
-                "🏆 All Three Scans — Low Vol + Pivot + Inside Day",
-                "#27ae60",
-                "Highest priority — all compression signals confirmed")
+                # Sort: RS Rating desc, then closest to 52W high
+                filtered_sorted = sorted(
+                    filtered,
+                    key=lambda x: (-(x.get("RS Rating") or 0), x.get("high_diff") or 99)
+                )
 
-            show_group(both_12,
-                "⭐ Scan 1 + Scan 2 — Low Volatility AND Pivot",
-                "#3498db",
-                "Strong setup — coiling at resistance")
+                st.markdown("<br>", unsafe_allow_html=True)
 
-            show_group(only3,
-                "🟣 Scan 3 Only — Inside Day",
-                "#9b59b6",
-                "Full range contained within prior day")
+                # Result header
+                mode_color = "#27ae60" if use_and else "#3498db"
+                st.markdown(
+                    f"<div style='background:#0a0e1a;border-left:4px solid {mode_color};"
+                    f"padding:10px 16px;border-radius:0 6px 6px 0;margin-bottom:12px'>"
+                    f"<span style='color:{mode_color};font-weight:700;font-size:14px'>"
+                    f"{'🏆' if use_and else '🔍'} {filter_desc}</span>"
+                    f"<span style='color:#6b8cad;font-size:12px;margin-left:12px'>"
+                    f"{'Must pass all selected scans' if use_and else 'Passes at least one selected scan'}"
+                    f"</span>"
+                    f"<span style='background:{mode_color}22;color:{mode_color};"
+                    f"font-family:DM Mono;font-size:13px;font-weight:700;"
+                    f"padding:3px 10px;border-radius:4px;float:right'>"
+                    f"{len(filtered_sorted)} stocks</span></div>",
+                    unsafe_allow_html=True
+                )
 
-            show_group(only1,
-                "🔵 Scan 1 Only — Low Volatility Contraction",
-                "#1a73e8",
-                "Tight price action over 2 days")
+                if not filtered_sorted:
+                    st.info("No stocks match the current filter. Try OR logic or select more scans.")
+                else:
+                    # Download
+                    rows_dl = []
+                    for r in filtered_sorted:
+                        rows_dl.append({
+                            "Ticker":r["ticker"],"Company":r.get("Company",""),
+                            "Industry":r.get("Industry",""),"Sector":r.get("Sector",""),
+                            "Price":r["price"],"Pivot High":r["pivot_high"],
+                            "RS Rating":r.get("RS Rating",""),"MA50":r.get("MA50",""),
+                            "Day1 Range %":r["range_d1"],"Day2 Range %":r["range_d2"],
+                            "High Diff %":r["high_diff"],
+                            "Inside Margin %":r.get("inside_margin",""),
+                            "S1 LowVol":"✅" if r["scan1"] else "❌",
+                            "S2 Pivot": "✅" if r["scan2"] else "❌",
+                            "S3 Inside":"✅" if r["scan3"] else "❌",
+                        })
+                    df_dl = pd.DataFrame(rows_dl)
+                    st.download_button(
+                        f"📥 Download {len(filtered_sorted)} stocks (Excel)",
+                        to_excel_bytes({"Filtered Results": df_dl, "All Scan Results": pd.DataFrame([
+                            {"Ticker":r["ticker"],"S1":r["scan1"],"S2":r["scan2"],"S3":r["scan3"]}
+                            for r in results
+                        ])}),
+                        "setup_scan_filtered.xlsx",
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="dl_filtered"
+                    )
 
-            show_group(only2,
-                "🟡 Scan 2 Only — Pivot / Resistance Area",
-                "#f39c12",
-                "Two consecutive highs at same level")
+                    st.markdown("<br>", unsafe_allow_html=True)
+
+                    # Charts grid
+                    cols = st.columns(charts_per_row)
+                    for i, r in enumerate(filtered_sorted):
+                        with cols[i % charts_per_row]:
+                            rs  = r.get("RS Rating")
+                            ind = r.get("Industry", "")
+                            fig = mini_candle_chart(r, industry=ind, rs=rs,
+                                                   vol_thresh=vol_thresh,
+                                                   pivot_thresh=pivot_thresh)
+                            st.plotly_chart(fig, use_container_width=True)
+
+                            tv_url = f"https://www.tradingview.com/chart/?symbol={r['ticker']}"
+                            s1_txt = f"<span style='color:#3498db'>S1:{r['range_d1']:.1f}/{r['range_d2']:.1f}%</span>" if r["scan1"] else ""
+                            s2_txt = f"<span style='color:#f39c12'>S2:Δ{r['high_diff']:.2f}%</span>" if r["scan2"] else ""
+                            s3_txt = f"<span style='color:#9b59b6'>S3:inside</span>" if r["scan3"] else ""
+                            ma50   = r.get("MA50")
+                            ma_txt = f"<span style='color:#6b8cad'>MA50:${ma50:.2f}</span>" if ma50 else ""
+                            st.markdown(
+                                f"<div style='font-family:DM Mono;font-size:10px;padding:2px 0 8px 0;"
+                                f"display:flex;gap:8px;flex-wrap:wrap;align-items:center'>"
+                                f"{s1_txt} {s2_txt} {s3_txt} {ma_txt}"
+                                f"<a href='{tv_url}' target='_blank' style='color:#1a73e8;"
+                                f"text-decoration:none;margin-left:auto'>📈 TV</a>"
+                                f"</div>",
+                                unsafe_allow_html=True
+                            )
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 7 — SECTOR ROTATION
